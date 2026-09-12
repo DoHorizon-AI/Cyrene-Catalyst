@@ -64,17 +64,20 @@ clean-root 源码内容将在无父 `main` 根提交处成为公开规范历史�
 The source tree is the clean-root payload for a future visibility change, but it
 is not yet a complete public release. Before switching GitHub visibility,
 maintainers must make the Plugins dependency anonymously reachable, review its
-license metadata, refresh the vendored Yield snapshot from a reachable owner
-commit, and run the GitHub Actions workflows at the exact release SHA. Local
-tests and a manual Azure run do not replace those gates. The former third-party
-game-dialogue corpus is intentionally excluded from this source tree and is not
-approved for public redistribution.
+license metadata, verify that the vendored Yield snapshot remains byte-identical
+to the reachable owner ref recorded in `contracts/vendor/yield-product-v1/PROVENANCE.md`
+(currently Yield `main@6fea8f835ce2561aaed4b0d9996856f6a3ef1ee6`), and run the
+GitHub Actions workflows at the exact release SHA. Local tests and a manual Azure
+run do not replace those gates. The former third-party game-dialogue corpus is
+intentionally excluded from this source tree and is not approved for public
+redistribution.
 
 源码树是未来切换可见性的 clean-root 内容，但还不是完整公开 release。切换 GitHub
-可见性前，维护者必须让 Plugins 依赖可匿名访问、审查其许可证元数据、从 owner 的
-可达提交刷新 vendored Yield 快照，并在精确 release SHA 上运行 GitHub Actions。本地
-测试或手动 Azure 运行不能替代这些门禁。历史第三方游戏对话语料已明确排除在本源码树
-之外，也未获准公开再分发。
+可见性前，维护者必须让 Plugins 依赖可匿名访问、审查其许可证元数据，并核验
+`contracts/vendor/yield-product-v1/PROVENANCE.md` 记录的 vendored Yield 快照仍与
+owner 可达引用逐字节一致（当前为 Yield `main@6fea8f835ce2561aaed4b0d9996856f6a3ef1ee6`），
+同时在精确 release SHA 上运行 GitHub Actions。本地测试或手动 Azure 运行不能替代这些
+门禁。历史第三方游戏对话语料已明确排除在本源码树之外，也未获准公开再分发。
 
 ---
 
