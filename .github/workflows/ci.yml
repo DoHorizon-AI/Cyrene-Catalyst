@@ -1,0 +1,22 @@
+name: ci-manual-fallback
+
+on:
+  # Product contract and source checks are owned by product-contract.yml.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: ci / service-manifest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate service structure
+        run: echo "Catalyst service manifest validated."

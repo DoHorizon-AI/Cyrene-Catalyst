@@ -1,0 +1,7 @@
+{
+  "repository": "DoHorizon-AI/Cyrene-Platform",
+  "revision": "c59be6f2bd82489fbe933dadff84fc589e00afd9",
+  "sha256": {
+    "contracts/schemas/manifests/artifact_ref.schema.json": "c71d57b9a3e7e01f7fde458fdd6387987653ae75d15227f959e1a7ad3d5731b4"
+  }
+}

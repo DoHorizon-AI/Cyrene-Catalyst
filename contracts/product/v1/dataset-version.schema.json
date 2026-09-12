@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.cyrene.dev/catalyst/product/v1/dataset-version.schema.json",
+  "title": "Catalyst DatasetVersion v1",
+  "type": "object",
+  "required": [
+    "id",
+    "datasetId",
+    "version",
+    "state",
+    "source",
+    "engineBindingId",
+    "engineCapabilityType",
+    "lineage",
+    "createdAt",
+    "updatedAt",
+    "resourceVersion"
+  ],
+  "properties": {
+    "id": {"type": "string", "format": "uuid"},
+    "datasetId": {"type": "string", "format": "uuid"},
+    "version": {"type": "integer", "minimum": 1},
+    "state": {"enum": ["PROCESSING", "PUBLISHED", "FAILED"]},
+    "source": {"$ref": "#/$defs/artifactRef"},
+    "output": {"$ref": "#/$defs/artifactRef"},
+    "engineBindingId": {"type": "string", "minLength": 1, "maxLength": 200},
+    "engineCapabilityType": {"const": "dataset.preparation.v1"},
+    "sourceRefs": {"type": "array", "items": {"type": "string", "format": "uri"}},
+    "lineage": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/lineageEdge"}
+    },
+    "rowCount": {"type": "integer", "minimum": 0},
+    "schemaFields": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "failure": {"$ref": "#/$defs/failure"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "updatedAt": {"type": "string", "format": "date-time"},
+    "resourceVersion": {"type": "integer", "minimum": 1}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"state": {"const": "PUBLISHED"}}},
+      "then": {"required": ["output", "rowCount", "schemaFields"]}
+    },
+    {
+      "if": {"properties": {"state": {"const": "FAILED"}}},
+      "then": {"required": ["failure"]}
+    }
+  ],
+  "$defs": {
+    "artifactRef": {
+      "$comment": "SPDX-License-Identifier: Apache-2.0",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "https://cy-llm.dev/schemas/manifests/artifact_ref.schema.json",
+      "title": "ArtifactRef",
+      "description": "Provider-neutral immutable reference to an artifact. Provider locations are resolved separately.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uri", "digest", "size_bytes", "kind"],
+      "properties": {
+        "uri": {"type": "string", "pattern": "^artifact://sha256/[0-9a-f]{64}$"},
+        "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "size_bytes": {"type": "integer", "minimum": 0},
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Opaque producer-owned category. Platform does not define its vocabulary."
+        },
+        "manifest_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "Digest of a canonical multi-file directory index when the artifact is a directory; for a portable V2 directory this identifies the manifest bytes described by portable_directory_manifest.schema.json."
+        }
+      }
+    },
+    "failure": {
+      "type": "object",
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]+$"},
+        "message": {"type": "string"},
+        "retryable": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "lineageEdge": {
+      "type": "object",
+      "required": ["fromDigest", "toDigest", "relation"],
+      "properties": {
+        "fromDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "toDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "relation": {"const": "DERIVED_FROM"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,270 @@
+# Generated from implemented Product actions; ArtifactRef is the shared
+# provider-neutral identity contract, while Product lifecycle state stays here.
+openapi: 3.1.2
+x-cyrene-contract-profile: product-http-v1
+info:
+  title: Cyrene Catalyst Product API
+  version: 1.0.0
+paths:
+  /api/v1/preparations/{preparationId}/yield-draft:
+    post:
+      summary: Create Yield Draft
+      operationId: create_yield_draft_api_v1_preparations__preparationId__yield_draft_post
+      parameters:
+      - name: preparationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Preparationid
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HandoffReceipt'
+        '422':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '404':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '409':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '502':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '503':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+  /api/v1/dataset-versions/{versionId}/actions/send-to-yield:
+    post:
+      summary: Send Version
+      operationId: send_version_api_v1_dataset_versions__versionId__actions_send_to_yield_post
+      parameters:
+      - name: versionId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Versionid
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HandoffReceipt'
+        '422':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '404':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '409':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '502':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '503':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+  /api/v1/feedback-imports:
+    post:
+      summary: Import Feedback
+      operationId: import_feedback_api_v1_feedback_imports_post
+      parameters:
+      - name: idempotency-key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 200
+          - type: 'null'
+          title: Idempotency-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FeedbackImportRequest'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HandoffReceipt'
+        '422':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '404':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '409':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '502':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '503':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+components:
+  schemas:
+    ArtifactRef:
+      $ref: ./generated/platform/artifact-ref.schema.json
+    FeedbackImportRequest:
+      properties:
+        sourceRef:
+          $ref: '#/components/schemas/ResourceRef'
+        artifact:
+          $ref: '#/components/schemas/ArtifactRef'
+        datasetId:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Datasetid
+        provenanceRefs:
+          items:
+            type: string
+          type: array
+          maxItems: 100
+          title: Provenancerefs
+      additionalProperties: false
+      type: object
+      required:
+      - sourceRef
+      - artifact
+      title: FeedbackImportRequest
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    HandoffReceipt:
+      properties:
+        status:
+          type: string
+          enum:
+          - DRAFT
+          - PREPARED
+          - STARTED
+          title: Status
+        targetResource:
+          $ref: '#/components/schemas/ResourceRef'
+        openIn:
+          type: string
+          title: Openin
+      additionalProperties: false
+      type: object
+      required:
+      - status
+      - targetResource
+      - openIn
+      title: HandoffReceipt
+      description: Confirmed target resource, returned only after target creation. | 目标确认。
+    ResourceRef:
+      properties:
+        uri:
+          type: string
+          pattern: ^(https?://|cyrene://)[^\s]+$
+          title: Uri
+        id:
+          type: string
+          format: uuid
+          title: Id
+        resourceVersion:
+          type: integer
+          minimum: 1.0
+          title: Resourceversion
+      additionalProperties: false
+      type: object
+      required:
+      - uri
+      - id
+      - resourceVersion
+      title: ResourceRef
+      description: Versioned identity owned by the named Product. | 产品资源引用。
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+        input:
+          title: Input
+        ctx:
+          type: object
+          title: Context
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError

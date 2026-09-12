@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cyrene Catalyst · 数据整理</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --txt:#e6edf3; --mut:#8b949e; --ok:#3fb950; --warn:#d29922; --err:#f85149; --acc:#58a6ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:13px/1.55 ui-monospace,Consolas,Menlo,monospace; background:var(--bg); color:var(--txt); }
+  header { padding:10px 14px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:center; }
+  h1 { font-size:15px; margin:0; letter-spacing:.5px; }
+  .tag { color:var(--mut); font-size:12px; }
+  main { max-width:1280px; margin:0 auto; padding:14px; display:grid; gap:14px; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; }
+  h2 { margin:0 0 10px; font-size:13px; color:var(--acc); text-transform:uppercase; letter-spacing:.6px; display:flex; justify-content:space-between; align-items:center; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  input,select,button { font:inherit; background:#0d1117; color:var(--txt); border:1px solid var(--line); border-radius:5px; padding:5px 8px; }
+  input[type=file]{ padding:3px; }
+  button { cursor:pointer; border-color:var(--acc); color:var(--acc); }
+  button:hover{ background:#1f6feb22; }
+  button:disabled{ opacity:.4; cursor:not-allowed; }
+  .primary{ background:var(--acc); color:#0d1117; font-weight:600; }
+  .primary:disabled{ background:#30363d; color:var(--mut); }
+  table { border-collapse:collapse; width:100%; font-size:12px; }
+  th,td { border:1px solid var(--line); padding:4px 6px; text-align:left; vertical-align:top; word-break:break-word; }
+  th { background:#0d1117; color:var(--mut); font-weight:500; }
+  .stat { display:inline-block; padding:2px 7px; margin:2px 4px 2px 0; border:1px solid var(--line); border-radius:10px; font-size:11px; color:var(--mut); }
+  .stat b { color:var(--txt); }
+  .badge { font-size:10px; padding:1px 6px; border-radius:8px; border:1px solid var(--line); }
+  .badge.staged{ color:#d29922; }
+  .badge.mapped{ color:#58a6ff; }
+  .badge.split{ color:#a371f7; }
+  .badge.confirmed{ color:#3fb950; }
+  .badge.published{ color:#3fb950; border-color:#3fb950; }
+  .err{ color:var(--err); }
+  .warn{ color:var(--warn); }
+  .ok{ color:var(--ok); }
+  .mut{ color:var(--mut); }
+  pre { background:#0d1117; border:1px solid var(--line); border-radius:5px; padding:8px; overflow:auto; max-height:240px; margin:0; font-size:12px; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:880px){ .grid2{ grid-template-columns:1fr; } }
+  .notice { border:1px solid var(--warn); color:var(--warn); padding:8px 10px; border-radius:6px; }
+  label { color:var(--mut); }
+  .hint { color:var(--mut); font-size:11px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Cyrene Catalyst</h1>
+  <span class="tag">数据整理 MVP · 导入 → 映射 → 规范化 → 去重 → 划分 → 确认 → 发布</span>
+  <span class="tag" id="serverState">未连接</span>
+</header>
+<main>
+
+  <section id="sec-dataset">
+    <h2>1 · 数据集 <span class="mut" id="datasetMeta"></span></h2>
+    <div class="row">
+      <select id="datasetSelect"><option value="">— 选择数据集 —</option></select>
+      <input id="datasetName" placeholder="新数据集名称" size="24">
+      <button id="createDatasetBtn" class="primary">创建数据集</button>
+      <button id="refreshDatasetsBtn">刷新</button>
+    </div>
+  </section>
+
+  <section id="sec-import">
+    <h2>2 · 导入源 <span class="mut">JSONL / JSON 数组 / 纯文本</span></h2>
+    <div class="row">
+      <input type="file" id="fileInput">
+      <input id="prepName" placeholder="整理名称" size="20">
+      <button id="uploadBtn" class="primary" disabled>上传并暂存</button>
+    </div>
+    <div id="importInfo" class="mut hint"></div>
+  </section>
+
+  <section id="sec-mapping">
+    <h2>3 · 字段映射与规范化 <span class="badge" id="prepBadge">—</span></h2>
+    <div class="grid2">
+      <div>
+        <div class="row">
+          <label>模式</label>
+          <select id="modeSelect">
+            <option value="instruction">instruction（指令/输出）</option>
+            <option value="conversation">conversation（对话 ShareGPT）</option>
+          </select>
+        </div>
+        <div id="instructionFields" class="row" style="margin-top:6px">
+          <label>instruction <select class="fieldSel" data-role="instruction"></select><input class="litIn" data-role="instruction" placeholder="或字面量" size="14"></div>
+          <label>input <select class="fieldSel" data-role="input"></select><input class="litIn" data-role="input" placeholder="或字面量" size="14"></div>
+          <label>output <select class="fieldSel" data-role="output"></select><input class="litIn" data-role="output" placeholder="或字面量" size="14"></div>
+        </div>
+        <div id="conversationFields" class="row" style="margin-top:6px; display:none">
+          <label>value <select class="fieldSel" data-role="convValue"></select></label>
+          <label>from <select class="fieldSel" data-role="convFrom"></select></label>
+        </div>
+        <div class="row" style="margin-top:6px">
+          <label>分组字段(划分防泄漏) <select id="groupBySelect"></select></label>
+        </div>
+      </div>
+      <div>
+        <div class="row">
+          <label><input type="checkbox" id="normTrim" checked> trim</label>
+          <label><input type="checkbox" id="normCollapse" checked> 折叠空白</label>
+          <label><input type="checkbox" id="normNfc" checked> Unicode NFC</label>
+        </div>
+        <button id="applyMappingBtn" class="primary" style="margin-top:6px">应用映射</button>
+      </div>
+    </div>
+    <div id="reportBox" style="margin-top:10px"></div>
+    <div class="grid2" style="margin-top:10px">
+      <div>
+        <h2 style="color:var(--mut)">规范化样本预览</h2>
+        <button id="loadNormBtn" class="primary" style="margin-bottom:6px">加载</button>
+        <div id="normPreview"></div>
+      </div>
+      <div>
+        <h2 style="color:var(--mut)">剔除样本（带原因）</h2>
+        <button id="loadErrBtn" class="warn" style="margin-bottom:6px">加载</button>
+        <div id="errPreview"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="sec-split">
+    <h2>4 · 划分训练/验证</h2>
+    <div class="row">
+      <label>训练比例 <input id="trainRatio" type="number" min="0" max="1" step="0.05" value="0.9" size="5"></label>
+      <button id="applySplitBtn" class="primary">应用划分</button>
+      <span id="splitStats" class="mut"></span>
+    </div>
+  </section>
+
+  <section id="sec-confirm">
+    <h2>5 · 人工确认</h2>
+    <div class="row">
+      <button id="confirmBtn" class="primary" disabled>确认（发布前置门）</button>
+      <span id="confirmState" class="mut"></span>
+    </div>
+  </section>
+
+  <section id="sec-publish">
+    <h2>6 · 发布 DatasetVersion 与导出</h2>
+    <div class="row">
+      <button id="publishBtn" class="primary" disabled>发布</button>
+      <span id="publishState" class="mut"></span>
+    </div>
+    <div id="publishResult" style="margin-top:10px"></div>
+  </section>
+
+  <section id="sec-yield">
+    <h2>7 · 发送到 Yield</h2>
+    <div class="row">
+      <button id="yieldBtn" class="primary" disabled>创建输入草稿</button>
+      <span id="yieldState" class="mut"></span>
+    </div>
+    <div id="yieldResult" style="margin-top:10px"></div>
+  </section>
+
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+let datasetId = null, prepId = null, prepState = null, detectedFields = [];
+
+async function api(method, path, {body, headers, raw} = {}) {
+  const opt = { method, headers: headers || {} };
+  if (body !== undefined) {
+    if (raw) { opt.body = body; opt.headers['Content-Type'] = opt.headers['Content-Type'] || 'application/octet-stream'; }
+    else { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
+  }
+  const res = await fetch(path, opt);
+  const text = await res.text();
+  let data = text ? (text.startsWith('{') || text.startsWith('[') ? JSON.parse(text) : text) : null;
+  if (!res.ok) {
+    const msg = data && data.detail ? `${data.code || ''}: ${data.detail}` : (`HTTP ${res.status}`);
+    throw new Error(msg);
+  }
+  return data;
+}
+
+function badge(state) {
+  const cls = (state || '').toLowerCase();
+  return `<span class="badge ${cls}">${state || '—'}</span>`;
+}
+
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+async function refreshDatasets() {
+  const list = await api('GET', '/api/v1/datasets');
+  const sel = $('#datasetSelect');
+  sel.innerHTML = '<option value="">— 选择数据集 —</option>' + list.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
+  if (datasetId) sel.value = datasetId;
+}
+
+async function createDataset() {
+  const name = $('#datasetName').value.trim();
+  if (!name) return;
+  const d = await api('POST', '/api/v1/datasets', {body: {name}});
+  datasetId = d.id;
+  await refreshDatasets();
+  $('#datasetMeta').textContent = `${d.name} · ${d.id}`;
+  enableImport();
+}
+
+function enableImport() { $('#uploadBtn').disabled = !datasetId; }
+
+$('#createDatasetBtn').onclick = createDataset;
+$('#refreshDatasetsBtn').onclick = refreshDatasets;
+$('#datasetSelect').onchange = (e) => { datasetId = e.target.value || null; $('#datasetMeta').textContent = ''; enableImport(); refreshPrepList(); };
+
+async function refreshPrepList() {
+  if (!datasetId) return;
+  const list = await api('GET', `/api/v1/datasets/${datasetId}/preparations`);
+  if (list.length && !prepId) { prepId = list[0].id; loadPreparation(); }
+}
+
+$('#uploadBtn').onclick = async () => {
+  const file = $('#fileInput').files[0];
+  const name = $('#prepName').value.trim() || file.name;
+  if (!file || !datasetId) return;
+  const data = await file.arrayBuffer();
+  try {
+    const prep = await api('POST', `/api/v1/datasets/${datasetId}/preparations?name=${encodeURIComponent(name)}&filename=${encodeURIComponent(file.name)}`, {body: new Uint8Array(data), raw: true});
+    prepId = prep.id;
+    $('#importInfo').innerHTML = `<span class="ok">已暂存</span> · 格式 <b>${prep.format}</b> · 行数 <b>${prep.rowCount}</b> · 字段 <b>${esc(prep.detectedFields.join(', '))}</b>`;
+    populateFields(prep.detectedFields);
+    detectedFields = prep.detectedFields;
+    setPrepState(prep);
+  } catch (e) { $('#importInfo').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+};
+
+function populateFields(fields) {
+  const opts = ['<option value="">（无）</option>'].concat(fields.map(f => `<option value="${esc(f)}">${esc(f)}</option>`));
+  document.querySelectorAll('.fieldSel').forEach(sel => sel.innerHTML = opts.join(''));
+  $('#groupBySelect').innerHTML = '<option value="">（不分组 · 单行隔离）</option>' + fields.map(f => `<option value="${esc(f)}">${esc(f)}</option>`).join('');
+}
+
+function setPrepState(prep) {
+  prepState = prep ? prep.state : null;
+  $('#prepBadge').outerHTML = `<span id="prepBadge">${badge(prep ? prep.state : null)}</span>`;
+  const mapped = ['MAPPED','SPLIT','CONFIRMED','PUBLISHED'].includes(prepState);
+  $('#applySplitBtn').disabled = !mapped;
+  $('#confirmBtn').disabled = prepState !== 'SPLIT';
+  $('#publishBtn').disabled = prepState !== 'CONFIRMED';
+  $('#yieldBtn').disabled = prepState !== 'PUBLISHED';
+  $('#loadNormBtn').disabled = !mapped;
+  $('#loadErrBtn').disabled = !mapped;
+  if (prep.split) $('#trainRatio').value = prep.split.trainRatio;
+  if (prep.splitStats) $('#splitStats').innerHTML = statsBadge(prep.splitStats);
+  if (prep.publishedVersionId) $('#publishState').textContent = `已发布 ${prep.publishedVersionId}`;
+  if (prep.exports && prep.exports.length) renderExports(prep.exports);
+}
+
+function statsBadge(s) {
+  return `<span class="stat">train <b>${s.trainSamples}</b>/${s.trainGroups}组</span><span class="stat">val <b>${s.valSamples}</b>/${s.valGroups}组</span><span class="stat">ratio <b>${s.trainRatio}</b></span>`;
+}
+
+$('#modeSelect').onchange = (e) => {
+  $('#instructionFields').style.display = e.target.value === 'instruction' ? '' : 'none';
+  $('#conversationFields').style.display = e.target.value === 'conversation' ? '' : 'none';
+};
+
+function buildMapping() {
+  const mode = $('#modeSelect').value;
+  const fieldOrLiteral = (role) => {
+    const field = document.querySelector(`.fieldSel[data-role="${role}"]`).value;
+    const literal = document.querySelector(`.litIn[data-role="${role}"]`).value;
+    if (literal) return {literal};
+    if (field) return {field};
+    return null;
+  };
+  if (mode === 'instruction') {
+    const mapping = {mode, instruction: fieldOrLiteral('instruction'), input: fieldOrLiteral('input'), output: fieldOrLiteral('output')};
+    const gb = $('#groupBySelect').value;
+    if (gb) mapping.groupBy = gb;
+    return mapping;
+  }
+  const mapping = {mode, conversationValueField: document.querySelector('.fieldSel[data-role="convValue"]').value || null, conversationFromField: document.querySelector('.fieldSel[data-role="convFrom"]').value || null};
+  const gb = $('#groupBySelect').value;
+  if (gb) mapping.groupBy = gb;
+  return mapping;
+}
+
+$('#applyMappingBtn').onclick = async () => {
+  try {
+    const mapping = buildMapping();
+    const normalization = {trimWhitespace: $('#normTrim').checked, collapseWhitespace: $('#normCollapse').checked, unicodeNfc: $('#normNfc').checked};
+    const prep = await api('PATCH', `/api/v1/preparations/${prepId}/mapping`, {body: {mapping, normalization}});
+    renderReport(prep);
+    setPrepState(prep);
+  } catch (e) { $('#reportBox').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+};
+
+function renderReport(prep) {
+  const r = prep.report;
+  if (!r) { $('#reportBox').innerHTML = ''; return; }
+  $('#reportBox').innerHTML = `
+    <div><span class="stat">总行 <b>${r.totalRows}</b></span><span class="stat">有效 <b>${r.validSamples}</b></span><span class="stat">错误 <b class="err">${r.errorSamples}</b></span><span class="stat">重复 <b>${r.duplicateSamples}</b></span><span class="stat">唯一 <b>${r.uniqueSamples}</b></span><span class="stat">分组 <b>${r.groupCount}</b></span></div>`;
+}
+
+$('#loadNormBtn').onclick = async () => {
+  const v = await api('GET', `/api/v1/preparations/${prepId}/samples?stage=normalized&limit=20`);
+  $('#normPreview').innerHTML = `<pre>${v.items.map(i => `#${i.sampleIndex} [${i.split || '·'}] ${esc(JSON.stringify(i.content))}`).join('\n')}</pre>`;
+};
+$('#loadErrBtn').onclick = async () => {
+  const v = await api('GET', `/api/v1/preparations/${prepId}/samples?stage=errors&limit=50`);
+  $('#errPreview').innerHTML = v.items.length ? `<table><tr><th>行</th><th>原因</th><th>字段</th><th>摘录</th></tr>${v.items.map(e => `<tr><td>${e.rowIndex}</td><td class="err">${esc(e.reasonCode)}</td><td>${esc(e.field || '')}</td><td>${esc(e.excerpt)}</td></tr>`).join('')}</table>` : '<span class="ok">无错误样本</span>';
+};
+
+$('#applySplitBtn').onclick = async () => {
+  const trainRatio = parseFloat($('#trainRatio').value);
+  const prep = await api('PATCH', `/api/v1/preparations/${prepId}/split`, {body: {split: {trainRatio}}});
+  setPrepState(prep);
+};
+
+$('#confirmBtn').onclick = async () => {
+  const prep = await api('POST', `/api/v1/preparations/${prepId}/confirm`);
+  setPrepState(prep);
+  $('#confirmState').textContent = '已确认';
+};
+
+$('#publishBtn').onclick = async () => {
+  try {
+    const res = await api('POST', `/api/v1/preparations/${prepId}/publish`);
+    setPrepState(res.preparation);
+    renderExports(res.preparation.exports);
+    $('#publishResult').innerHTML = `<div class="ok">DatasetVersion 已发布</div><pre>id: ${res.datasetVersion.id}\nversion: ${res.datasetVersion.version}\nrowCount: ${res.datasetVersion.rowCount}\nschema: ${esc(JSON.stringify(res.datasetVersion.schemaFields))}</pre>`;
+  } catch (e) { $('#publishResult').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+};
+
+function renderExports(exports) {
+  if (!exports || !exports.length) { return; }
+  $('#publishResult').innerHTML += `<h2 style="color:var(--mut); margin-top:10px">导出文件（标准训练数据）</h2>` +
+    exports.map(e => `<div class="row"><a href="/api/v1/preparations/${prepId}/exports/${e.name}" download="${e.name}">${e.name}</a> <span class="mut">${e.rowCount ?? '—'} 行 · ${e.mediaType}</span></div>`).join('');
+}
+
+$('#yieldBtn').onclick = async () => {
+  try {
+    const res = await api('POST', `/api/v1/preparations/${prepId}/yield-draft`);
+    $('#yieldResult').innerHTML = `<div class="notice">Yield 已接收。训练需要在 Yield 中显式启动。</div><pre>${esc(JSON.stringify(res.targetResource, null, 2))}</pre>`;
+    const open = document.createElement('a');
+    open.href = res.openIn;
+    open.textContent = 'Open in Yield';
+    open.target = '_blank';
+    open.rel = 'noopener noreferrer';
+    $('#yieldResult').append(open);
+    $('#yieldState').textContent = res.status;
+  } catch (e) { $('#yieldResult').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+};
+
+async function loadPreparation() {
+  if (!prepId) return;
+  const prep = await api('GET', `/api/v1/preparations/${prepId}`);
+  populateFields(prep.detectedFields);
+  detectedFields = prep.detectedFields;
+  if (prep.mapping) {
+    $('#modeSelect').value = prep.mapping.mode;
+    $('#modeSelect').dispatchEvent(new Event('change'));
+    if (prep.mapping.mode === 'instruction') {
+      ['instruction','input','output'].forEach(r => {
+        const src = prep.mapping[r] || (r === 'instruction' ? prep.mapping.instruction : (r === 'output' ? prep.mapping.output : prep.mapping.input));
+        if (src && src.field) document.querySelector(`.fieldSel[data-role="${r}"]`).value = src.field;
+        if (src && src.literal) document.querySelector(`.litIn[data-role="${r}"]`).value = src.literal;
+      });
+    } else {
+      document.querySelector('.fieldSel[data-role="convValue"]').value = prep.mapping.conversationValueField || '';
+      document.querySelector('.fieldSel[data-role="convFrom"]').value = prep.mapping.conversationFromField || '';
+    }
+    if (prep.mapping.groupBy) $('#groupBySelect').value = prep.mapping.groupBy;
+  }
+  renderReport(prep);
+  setPrepState(prep);
+}
+
+(async function init() {
+  $('#serverState').textContent = '已连接';
+  await refreshDatasets();
+})();
+</script>
+</body>
+</html>

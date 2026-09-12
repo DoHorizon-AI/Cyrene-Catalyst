@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling==1.32.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cyrene-catalyst"
+version = "0.1.0"
+description = "Cyrene Product-owned dataset and lineage contract with a replaceable data engine"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+dependencies = [
+  "httpx==0.28.1",
+  "fastapi==0.141.1",
+  "pydantic==2.13.5",
+  "uvicorn==0.37.0",
+  "cyrene-plugin-runtime @ git+https://github.com/DoHorizon-AI/Cyrene-Plugins-Official.git@c3f75689ebb10b2e07b3816310e768d74ae6cc10#subdirectory=sdk/python/cyrene_plugin_runtime",
+]
+
+[dependency-groups]
+dev = [
+  "cyrene-dataset-preparation @ git+https://github.com/DoHorizon-AI/Cyrene-Plugins-Official.git@c3f75689ebb10b2e07b3816310e768d74ae6cc10#subdirectory=plugins/tools/dataset-preparation",
+  "duckdb==1.5.5",
+  "httpx==0.28.1",
+  "jsonschema==4.26.0",
+  "mypy==2.3.1",
+  "openapi-spec-validator==0.9.0",
+  "pytest==9.1.1",
+  "ruff==0.16.5",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cyrene_catalyst"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
+filterwarnings = [
+  "ignore:Using `httpx` with `starlette.testclient` is deprecated:starlette.exceptions.StarletteDeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["RUF002"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src/cyrene_catalyst"]

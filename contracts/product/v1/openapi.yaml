@@ -1,0 +1,465 @@
+# ┌─────────────────────────────────────────────────────────────────────┐
+# │  Catalyst Product API v1                                            │
+# │  Owns Dataset and DatasetVersion state; engines only process bytes. │
+# └─────────────────────────────────────────────────────────────────────┘
+openapi: 3.1.2
+x-cyrene-contract-profile: product-http-v1
+info:
+  title: Cyrene Catalyst Product API
+  version: 1.0.0
+  license:
+    name: Apache-2.0
+servers:
+  - url: /
+paths:
+  /api/v1/datasets:
+    get:
+      operationId: listDatasets
+      responses:
+        '200':
+          description: Datasets
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Dataset'}
+    post:
+      operationId: createDataset
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDatasetRequest'
+      responses:
+        '201':
+          description: Dataset created or idempotently replayed
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Dataset'}
+        '409': {$ref: '#/components/responses/Problem'}
+  /api/v1/datasets/{datasetId}:
+    parameters:
+      - $ref: '#/components/parameters/DatasetId'
+    get:
+      operationId: getDataset
+      responses:
+        '200':
+          description: Dataset
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Dataset'}
+        '404': {$ref: '#/components/responses/Problem'}
+  /api/v1/datasets/{datasetId}/preparations:
+    parameters:
+      - $ref: '#/components/parameters/DatasetId'
+    get:
+      operationId: listPreparations
+      responses:
+        '200':
+          description: Preparations
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Preparation'}
+        '404': {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: createPreparation
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 200}
+        - name: filename
+          in: query
+          required: false
+          schema: {type: string, maxLength: 300, default: source}
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: {type: string, format: binary}
+      responses:
+        '201':
+          description: Preparation staged
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Preparation'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+  /api/v1/datasets/{datasetId}/versions:
+    parameters:
+      - $ref: '#/components/parameters/DatasetId'
+    post:
+      operationId: createDatasetVersion
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDatasetVersionRequest'
+      responses:
+        '201':
+          description: Immutable published version
+          content:
+            application/json:
+              schema:
+                $ref: './dataset-version.schema.json'
+        '404': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+  /api/v1/dataset-versions/{versionId}:
+    get:
+      operationId: getDatasetVersion
+      parameters:
+        - name: versionId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: DatasetVersion, including persisted failures
+          content:
+            application/json:
+              schema:
+                $ref: './dataset-version.schema.json'
+        '404': {$ref: '#/components/responses/Problem'}
+  /api/v1/preparations/{preparationId}:
+    parameters:
+      - $ref: '#/components/parameters/PreparationId'
+    get:
+      operationId: getPreparation
+      responses:
+        '200':
+          description: Preparation
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Preparation'}
+        '404': {$ref: '#/components/responses/Problem'}
+  /api/v1/preparations/{preparationId}/samples:
+    parameters:
+      - $ref: '#/components/parameters/PreparationId'
+    get:
+      operationId: previewSamples
+      parameters:
+        - name: stage
+          in: query
+          required: false
+          schema: {type: string, enum: [raw, normalized, errors], default: raw}
+        - name: offset
+          in: query
+          required: false
+          schema: {type: integer, minimum: 0, default: 0}
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 200, default: 20}
+      responses:
+        '200':
+          description: Paginated preview
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+  /api/v1/preparations/{preparationId}/mapping:
+    parameters:
+      - $ref: '#/components/parameters/PreparationId'
+    patch:
+      operationId: configureMapping
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ConfigureMappingRequest'}
+      responses:
+        '200':
+          description: Updated preparation
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Preparation'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+  /api/v1/preparations/{preparationId}/split:
+    parameters:
+      - $ref: '#/components/parameters/PreparationId'
+    patch:
+      operationId: configureSplit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ConfigureSplitRequest'}
+      responses:
+        '200':
+          description: Updated preparation
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Preparation'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+  /api/v1/preparations/{preparationId}/confirm:
+    parameters:
+      - $ref: '#/components/parameters/PreparationId'
+    post:
+      operationId: confirmPreparation
+      responses:
+        '200':
+          description: Confirmed preparation
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Preparation'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+  /api/v1/preparations/{preparationId}/publish:
+    parameters:
+      - $ref: '#/components/parameters/PreparationId'
+    post:
+      operationId: publishPreparation
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '201':
+          description: Published DatasetVersion
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PublishPreparationResponse'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+  /api/v1/preparations/{preparationId}/exports:
+    parameters:
+      - $ref: '#/components/parameters/PreparationId'
+    get:
+      operationId: listExports
+      responses:
+        '200':
+          description: Export files
+        '404': {$ref: '#/components/responses/Problem'}
+  /api/v1/preparations/{preparationId}/exports/{fileName}:
+    parameters:
+      - $ref: '#/components/parameters/PreparationId'
+      - name: fileName
+        in: path
+        required: true
+        schema: {type: string}
+    get:
+      operationId: downloadExport
+      responses:
+        '200':
+          description: Export bytes
+          content:
+            application/jsonl: {}
+            application/json: {}
+        '404': {$ref: '#/components/responses/Problem'}
+  /api/v1/preparations/{preparationId}/yield-draft:
+    $ref: './lifecycle.openapi.yaml#/paths/~1api~1v1~1preparations~1{preparationId}~1yield-draft'
+  /api/v1/dataset-versions/{versionId}/actions/send-to-yield:
+    $ref: './lifecycle.openapi.yaml#/paths/~1api~1v1~1dataset-versions~1{versionId}~1actions~1send-to-yield'
+  /api/v1/feedback-imports:
+    $ref: './lifecycle.openapi.yaml#/paths/~1api~1v1~1feedback-imports'
+components:
+  parameters:
+    DatasetId:
+      name: datasetId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    PreparationId:
+      name: preparationId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: {type: string, minLength: 1, maxLength: 200}
+  responses:
+    Problem:
+      description: RFC 9457 Problem Details
+      content:
+        application/problem+json:
+          schema: {$ref: './generated/common/problem-details.schema.json'}
+  schemas:
+    CreateDatasetRequest:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 200}
+        description: {type: string, maxLength: 2000, default: ''}
+      additionalProperties: false
+    CreateDatasetVersionRequest:
+      type: object
+      required: [source, engineBindingId]
+      properties:
+        source: {$ref: './generated/platform/artifact-ref.schema.json'}
+        engineBindingId: {type: string, minLength: 1, maxLength: 200}
+      additionalProperties: false
+    Dataset:
+      type: object
+      required: [id, name, description, state, createdAt, updatedAt, resourceVersion]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        description: {type: string}
+        state: {enum: [ACTIVE, ARCHIVED]}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+        resourceVersion: {type: integer, minimum: 1}
+      additionalProperties: false
+    FieldSource:
+      type: object
+      properties:
+        field: {type: string, minLength: 1, maxLength: 200}
+        literal: {type: string, maxLength: 2000}
+      additionalProperties: false
+    MappingConfig:
+      type: object
+      required: [mode]
+      properties:
+        mode: {type: string, enum: [instruction, conversation]}
+        instruction: {$ref: '#/components/schemas/FieldSource'}
+        input: {$ref: '#/components/schemas/FieldSource'}
+        output: {$ref: '#/components/schemas/FieldSource'}
+        conversationValueField: {type: string, minLength: 1, maxLength: 200}
+        conversationFromField: {type: string, minLength: 1, maxLength: 200}
+        groupBy: {type: string, minLength: 1, maxLength: 200}
+      additionalProperties: false
+    NormalizationConfig:
+      type: object
+      required: [trimWhitespace, collapseWhitespace, unicodeNfc]
+      properties:
+        trimWhitespace: {type: boolean}
+        collapseWhitespace: {type: boolean}
+        unicodeNfc: {type: boolean}
+      additionalProperties: false
+    SplitConfig:
+      type: object
+      required: [trainRatio]
+      properties:
+        trainRatio: {type: number, minimum: 0, maximum: 1}
+      additionalProperties: false
+    ConfigureMappingRequest:
+      type: object
+      required: [mapping, normalization]
+      properties:
+        mapping: {$ref: '#/components/schemas/MappingConfig'}
+        normalization: {$ref: '#/components/schemas/NormalizationConfig'}
+      additionalProperties: false
+    ConfigureSplitRequest:
+      type: object
+      required: [split]
+      properties:
+        split: {$ref: '#/components/schemas/SplitConfig'}
+      additionalProperties: false
+    Preparation:
+      type: object
+      required: [id, datasetId, name, state, source, sourceFilename, format, detectedFields, rowCount, createdAt, updatedAt, resourceVersion]
+      properties:
+        sourceRefs: {type: array, items: {type: string, format: uri}}
+        id: {type: string, format: uuid}
+        datasetId: {type: string, format: uuid}
+        name: {type: string}
+        state: {enum: [STAGED, MAPPED, SPLIT, CONFIRMED, PUBLISHED]}
+        source: {$ref: './generated/platform/artifact-ref.schema.json'}
+        sourceFilename: {type: string}
+        format: {enum: [JSONL, JSON, TEXT]}
+        detectedFields: {type: array, items: {type: string}}
+        rowCount: {type: integer, minimum: 0}
+        mapping: {$ref: '#/components/schemas/MappingConfig'}
+        normalization: {$ref: '#/components/schemas/NormalizationConfig'}
+        split: {$ref: '#/components/schemas/SplitConfig'}
+        report: {$ref: '#/components/schemas/PreparationReport'}
+        splitStats: {$ref: '#/components/schemas/SplitStats'}
+        publishedVersionId: {type: string, format: uuid}
+        exports: {type: array, items: {$ref: '#/components/schemas/ExportFile'}}
+        yieldDraft: {$ref: './generated/platform/artifact-ref.schema.json'}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+        resourceVersion: {type: integer, minimum: 1}
+      additionalProperties: false
+    PreparationReport:
+      type: object
+      required: [totalRows, validSamples, errorSamples, duplicateSamples, uniqueSamples, groupCount, errors]
+      properties:
+        totalRows: {type: integer, minimum: 0}
+        validSamples: {type: integer, minimum: 0}
+        errorSamples: {type: integer, minimum: 0}
+        duplicateSamples: {type: integer, minimum: 0}
+        uniqueSamples: {type: integer, minimum: 0}
+        groupCount: {type: integer, minimum: 0}
+        errors: {type: array, items: {$ref: '#/components/schemas/SampleError'}, maxItems: 100}
+      additionalProperties: false
+    SampleError:
+      type: object
+      required: [rowIndex, reasonCode, message, excerpt]
+      properties:
+        rowIndex: {type: integer, minimum: 1}
+        reasonCode: {type: string}
+        message: {type: string}
+        field: {type: string}
+        excerpt: {type: string, maxLength: 200}
+      additionalProperties: false
+    SplitStats:
+      type: object
+      required: [trainRatio, trainSamples, valSamples, trainGroups, valGroups]
+      properties:
+        trainRatio: {type: number}
+        trainSamples: {type: integer, minimum: 0}
+        valSamples: {type: integer, minimum: 0}
+        trainGroups: {type: integer, minimum: 0}
+        valGroups: {type: integer, minimum: 0}
+      additionalProperties: false
+    ExportFile:
+      type: object
+      required: [name, artifact, mediaType]
+      properties:
+        name: {type: string}
+        artifact: {$ref: './generated/platform/artifact-ref.schema.json'}
+        rowCount: {type: integer, minimum: 0}
+        mediaType: {type: string, enum: [application/jsonl, application/json]}
+      additionalProperties: false
+    YieldDraftStatus:
+      type: object
+      required: [status, detail, draft]
+      properties:
+        status: {type: string, enum: [NOT_CONNECTED]}
+        detail: {type: string}
+        draft: {type: object}
+      additionalProperties: false
+    PublishPreparationResponse:
+      type: object
+      required: [preparation, datasetVersion]
+      properties:
+        preparation: {$ref: '#/components/schemas/Preparation'}
+        datasetVersion: {$ref: '#/components/schemas/DatasetVersionSummary'}
+      additionalProperties: false
+    DatasetVersionSummary:
+      type: object
+      required: [id, datasetId, version, state, source, engineBindingId, engineCapabilityType, createdAt, updatedAt, resourceVersion]
+      properties:
+        sourceRefs: {type: array, items: {type: string, format: uri}}
+        id: {type: string, format: uuid}
+        datasetId: {type: string, format: uuid}
+        version: {type: integer, minimum: 1}
+        state: {enum: [PROCESSING, PUBLISHED, FAILED]}
+        source: {$ref: './generated/platform/artifact-ref.schema.json'}
+        output: {$ref: './generated/platform/artifact-ref.schema.json'}
+        engineBindingId: {type: string}
+        engineCapabilityType: {type: string}
+        lineage: {type: array, items: {type: object}}
+        rowCount: {type: integer, minimum: 0}
+        schemaFields: {type: array, items: {type: string}}
+        failure: {type: object}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+        resourceVersion: {type: integer, minimum: 1}
+      additionalProperties: false

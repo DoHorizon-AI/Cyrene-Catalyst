@@ -1,0 +1,1056 @@
+# Generated from implemented Product actions; ArtifactRef remains Platform-owned and ModelVersion is Yield-owned.
+openapi: 3.1.2
+x-cyrene-contract-profile: product-http-v1
+info:
+  title: Cyrene Yield Product API
+  version: 1.0.0
+paths:
+  /health:
+    get:
+      summary: Health
+      operationId: health_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Health Health Get
+        '404':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '409':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '422':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '502':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '503':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+  /api/v1/training-drafts:
+    post:
+      summary: Import Dataset
+      operationId: import_dataset_api_v1_training_drafts_post
+      parameters:
+      - name: idempotency-key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 200
+          - type: 'null'
+          title: Idempotency-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTrainingDraft'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrainingDraft'
+        '422':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '404':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '409':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '502':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '503':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+    get:
+      summary: List Drafts
+      operationId: list_drafts_api_v1_training_drafts_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TrainingDraft'
+                title: Response List Drafts Api V1 Training Drafts Get
+        '404':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '409':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '422':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '502':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '503':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+  /api/v1/training-drafts/{draft_id}:
+    get:
+      summary: Get Draft
+      operationId: get_draft_api_v1_training_drafts__draft_id__get
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Draft Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrainingDraft'
+        '422':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '404':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '409':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '502':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '503':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+    patch:
+      summary: Prepare Draft
+      operationId: prepare_draft_api_v1_training_drafts__draft_id__patch
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Draft Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PrepareTrainingDraft'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrainingDraft'
+        '422':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '404':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '409':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '502':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '503':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+  /api/v1/training-drafts/{draft_id}/actions/start:
+    post:
+      summary: Start Run
+      operationId: start_run_api_v1_training_drafts__draft_id__actions_start_post
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Draft Id
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrainingRunResource'
+        '422':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '404':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '409':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '502':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '503':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+  /api/v1/training-runs/{run_id}:
+    get:
+      summary: Get Run
+      operationId: get_run_api_v1_training_runs__run_id__get
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrainingRunResource'
+        '422':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '404':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '409':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '502':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '503':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+  /api/v1/training-runs/{run_id}/attempts:
+    get:
+      summary: Get Attempts
+      operationId: get_attempts_api_v1_training_runs__run_id__attempts_get
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TrainingAttemptResource'
+                title: Response Get Attempts Api V1 Training Runs  Run Id  Attempts Get
+        '422':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '404':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '409':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '502':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '503':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+  /api/v1/training-runs/{run_id}/actions/cancel:
+    post:
+      summary: Cancel Run
+      operationId: cancel_run_api_v1_training_runs__run_id__actions_cancel_post
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Run Id
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrainingRunResource'
+        '422':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '404':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '409':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '502':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '503':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+  /api/v1/training-results/{result_id}:
+    get:
+      summary: Get Result
+      operationId: get_result_api_v1_training_results__result_id__get
+      parameters:
+      - name: result_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Result Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrainingResultResource'
+        '422':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '404':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '409':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '502':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '503':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+  /api/v1/training-results/{result_id}/actions/send-to-reactor:
+    post:
+      summary: Send To Reactor
+      operationId: send_to_reactor_api_v1_training_results__result_id__actions_send_to_reactor_post
+      parameters:
+      - name: result_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Result Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HandoffReceipt'
+        '422':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '404':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '409':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '502':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '503':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+components:
+  schemas:
+    ArtifactRef:
+      $ref: ./generated/platform/artifact-ref.schema.json
+    BaseModel:
+      properties:
+        artifact:
+          $ref: '#/components/schemas/ArtifactRef'
+        source:
+          $ref: '#/components/schemas/BaseSource'
+      additionalProperties: false
+      type: object
+      required:
+      - artifact
+      - source
+      title: BaseModel
+    BaseSource:
+      properties:
+        repository:
+          type: string
+          pattern: ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$
+          title: Repository
+        revision:
+          type: string
+          pattern: ^[0-9a-f]{40}$
+          title: Revision
+      additionalProperties: false
+      type: object
+      required:
+      - repository
+      - revision
+      title: BaseSource
+    CreateTrainingDraft:
+      properties:
+        name:
+          type: string
+          maxLength: 200
+          minLength: 1
+          title: Name
+        datasetVersion:
+          $ref: '#/components/schemas/DatasetVersionRef'
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      - datasetVersion
+      title: CreateTrainingDraft
+    DatasetVersionRef:
+      properties:
+        uri:
+          type: string
+          pattern: ^(https?://|cyrene://)[^\s]+$
+          title: Uri
+        id:
+          type: string
+          format: uuid
+          title: Id
+        resourceVersion:
+          type: integer
+          minimum: 1.0
+          title: Resourceversion
+        artifact:
+          $ref: '#/components/schemas/ArtifactRef'
+        validationArtifact:
+          anyOf:
+          - $ref: '#/components/schemas/ArtifactRef'
+          - type: 'null'
+        format:
+          type: string
+          const: ALPACA_JSONL
+          title: Format
+          default: ALPACA_JSONL
+        provenanceRefs:
+          items:
+            type: string
+            maxLength: 2000
+            pattern: ^(cyrene|https?|artifact|model-version)://[^\s]+$
+          type: array
+          maxItems: 100
+          title: Provenancerefs
+      additionalProperties: false
+      type: object
+      required:
+      - uri
+      - id
+      - resourceVersion
+      - artifact
+      title: DatasetVersionRef
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    HandoffReceipt:
+      properties:
+        targetResource:
+          $ref: '#/components/schemas/ResourceRef'
+        status:
+          type: string
+          enum:
+          - DRAFT
+          - PREPARED
+          - STARTED
+          title: Status
+        openIn:
+          type: string
+          title: Openin
+      additionalProperties: false
+      type: object
+      required:
+      - targetResource
+      - status
+      - openIn
+      title: HandoffReceipt
+    PrepareTrainingDraft:
+      properties:
+        baseModel:
+          $ref: '#/components/schemas/BaseModel'
+        parameters:
+          $ref: '#/components/schemas/TrainingParameters'
+      additionalProperties: false
+      type: object
+      required:
+      - baseModel
+      title: PrepareTrainingDraft
+    ProducedArtifact:
+      properties:
+        kind:
+          type: string
+          enum:
+          - MODEL_CHECKPOINT
+          - MODEL_ADAPTER
+          - METRICS
+          - TRAINING_MANIFEST
+          title: Kind
+        artifact:
+          $ref: '#/components/schemas/ArtifactRef'
+        derivedFromDigests:
+          items:
+            type: string
+          type: array
+          title: Derivedfromdigests
+      additionalProperties: false
+      type: object
+      required:
+      - kind
+      - artifact
+      - derivedFromDigests
+      title: ProducedArtifact
+    ProductFailure:
+      properties:
+        code:
+          type: string
+          title: Code
+        message:
+          type: string
+          title: Message
+        retryable:
+          type: boolean
+          title: Retryable
+          default: false
+      additionalProperties: false
+      type: object
+      required:
+      - code
+      - message
+      title: ProductFailure
+    PublicTrainingSpec:
+      properties:
+        modelArtifact:
+          $ref: '#/components/schemas/ArtifactRef'
+        datasetVersion:
+          additionalProperties: true
+          type: object
+          title: Datasetversion
+        method:
+          type: string
+          const: SFT
+          title: Method
+          default: SFT
+        finetuningType:
+          type: string
+          const: LORA
+          title: Finetuningtype
+          default: LORA
+        parameters:
+          additionalProperties:
+            anyOf:
+            - type: integer
+            - type: number
+          type: object
+          title: Parameters
+        extensions:
+          additionalProperties: true
+          type: object
+          title: Extensions
+      additionalProperties: false
+      type: object
+      required:
+      - modelArtifact
+      - datasetVersion
+      - parameters
+      - extensions
+      title: PublicTrainingSpec
+    ResourceRef:
+      properties:
+        uri:
+          type: string
+          pattern: ^(https?://|cyrene://)[^\s]+$
+          title: Uri
+        id:
+          type: string
+          format: uuid
+          title: Id
+        resourceVersion:
+          type: integer
+          minimum: 1.0
+          title: Resourceversion
+      additionalProperties: false
+      type: object
+      required:
+      - uri
+      - id
+      - resourceVersion
+      title: ResourceRef
+      description: Opaque, versioned identity owned by the source Product.
+    TrainingAttemptResource:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        trainingRunId:
+          type: string
+          format: uuid
+          title: Trainingrunid
+        phase:
+          type: string
+          title: Phase
+        state:
+          type: string
+          title: State
+        failure:
+          anyOf:
+          - $ref: '#/components/schemas/ProductFailure'
+          - type: 'null'
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - trainingRunId
+      - phase
+      - state
+      title: TrainingAttemptResource
+      description: Public diagnostic projection; executor paths stay private.
+    TrainingDraft:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        resourceRef:
+          $ref: '#/components/schemas/ResourceRef'
+        state:
+          type: string
+          enum:
+          - DRAFT
+          - PREPARED
+          - STARTED
+          title: State
+        name:
+          type: string
+          title: Name
+        datasetVersion:
+          $ref: '#/components/schemas/DatasetVersionRef'
+        configuration:
+          anyOf:
+          - $ref: '#/components/schemas/PrepareTrainingDraft'
+          - type: 'null'
+        trainingRun:
+          anyOf:
+          - $ref: '#/components/schemas/ResourceRef'
+          - type: 'null'
+        cancellationRequestedAt:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Cancellationrequestedat
+        createdAt:
+          type: string
+          format: date-time
+          title: Createdat
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - resourceRef
+      - state
+      - name
+      - datasetVersion
+      - createdAt
+      title: TrainingDraft
+    TrainingParameters:
+      properties:
+        epochs:
+          type: number
+          maximum: 100.0
+          exclusiveMinimum: 0.0
+          title: Epochs
+          default: 1
+        perDeviceBatchSize:
+          type: integer
+          maximum: 64.0
+          minimum: 1.0
+          title: Perdevicebatchsize
+          default: 1
+        gradientAccumulationSteps:
+          type: integer
+          maximum: 1024.0
+          minimum: 1.0
+          title: Gradientaccumulationsteps
+          default: 1
+        learningRate:
+          type: number
+          maximum: 1.0
+          exclusiveMinimum: 0.0
+          title: Learningrate
+          default: 0.0002
+        maxSequenceLength:
+          type: integer
+          maximum: 32768.0
+          minimum: 16.0
+          title: Maxsequencelength
+          default: 512
+        maxSteps:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Maxsteps
+        loraRank:
+          type: integer
+          maximum: 512.0
+          minimum: 1.0
+          title: Lorarank
+          default: 8
+        loraAlpha:
+          type: integer
+          minimum: 1.0
+          title: Loraalpha
+          default: 16
+        template:
+          type: string
+          pattern: ^[A-Za-z0-9_-]{1,100}$
+          title: Template
+          default: default
+      additionalProperties: false
+      type: object
+      title: TrainingParameters
+    TrainingResultResource:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        resourceRef:
+          $ref: '#/components/schemas/ResourceRef'
+        trainingRun:
+          $ref: '#/components/schemas/ResourceRef'
+        datasetVersion:
+          $ref: '#/components/schemas/ResourceRef'
+        adapterArtifact:
+          $ref: '#/components/schemas/ArtifactRef'
+        checkpointArtifacts:
+          items:
+            $ref: '#/components/schemas/ArtifactRef'
+          type: array
+          title: Checkpointartifacts
+        modelVersion:
+          $ref: ./model-version.schema.json
+        createdAt:
+          type: string
+          format: date-time
+          title: Createdat
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - resourceRef
+      - trainingRun
+      - datasetVersion
+      - adapterArtifact
+      - checkpointArtifacts
+      - modelVersion
+      - createdAt
+      title: TrainingResultResource
+    TrainingRunResource:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        resourceRef:
+          $ref: '#/components/schemas/ResourceRef'
+        draftRef:
+          $ref: '#/components/schemas/ResourceRef'
+        state:
+          type: string
+          enum:
+          - QUEUED
+          - RUNNING
+          - COMPLETED
+          - FAILED
+          - CANCELLING
+          - CANCELLED
+          - AWAITING_RETRY
+          title: State
+        spec:
+          $ref: '#/components/schemas/PublicTrainingSpec'
+        engineBindingId:
+          type: string
+          title: Enginebindingid
+        engineCapabilityType:
+          type: string
+          const: cyrene.yield.training-runtime.v1
+          title: Enginecapabilitytype
+          default: cyrene.yield.training-runtime.v1
+        attemptCount:
+          type: integer
+          title: Attemptcount
+        outputArtifacts:
+          items:
+            $ref: '#/components/schemas/ProducedArtifact'
+          type: array
+          title: Outputartifacts
+        createdAt:
+          type: string
+          format: date-time
+          title: Createdat
+        updatedAt:
+          type: string
+          format: date-time
+          title: Updatedat
+        resourceVersion:
+          type: integer
+          title: Resourceversion
+        cancellationRequestedAt:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Cancellationrequestedat
+        result:
+          anyOf:
+          - $ref: '#/components/schemas/TrainingResultResource'
+          - type: 'null'
+        failure:
+          anyOf:
+          - $ref: '#/components/schemas/ProductFailure'
+          - type: 'null'
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - resourceRef
+      - draftRef
+      - state
+      - spec
+      - engineBindingId
+      - attemptCount
+      - outputArtifacts
+      - createdAt
+      - updatedAt
+      - resourceVersion
+      title: TrainingRunResource
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+        input:
+          title: Input
+        ctx:
+          type: object
+          title: Context
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError

@@ -1,0 +1,8 @@
+[
+  {"source_title": "白班交接-01", "speaker": "档案员", "text": "今日入库 12 件，全部贴码。"},
+  {"source_title": "白班交接-01", "speaker": "档案员", "text": "异常件 0，可结班。"},
+  {"source_title": "白班交接-01", "speaker": "复核员", "text": "已复核，同意结班。"},
+  {"source_title": "夜班巡检-02", "speaker": "巡检员", "text": "A 区温湿度正常。"},
+  {"source_title": "夜班巡检-02", "speaker": "巡检员", "text": "B 区有一处灯泡需更换，已登记。"},
+  {"source_title": "夜班巡检-02", "speaker": "值班长", "text": "收到，明日安排。"}
+]

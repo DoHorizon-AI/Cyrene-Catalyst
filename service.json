@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "id": "com.cyrene.service.catalyst",
+  "name": "Catalyst",
+  "service": "catalyst",
+  "visibility": "public",
+  "distribution": "advanced-service-plugin",
+  "status": "active-product",
+  "core": {
+    "protocol_version": 1,
+    "minimum_core_version": "0.1.0",
+    "extension_points": [
+      "dataset.preparation.v1"
+    ]
+  },
+  "source_roots": [
+    "src"
+  ]
+}

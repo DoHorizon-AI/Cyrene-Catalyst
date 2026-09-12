@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cy-llm.dev/schemas/manifests/artifact_ref.schema.json",
+  "title": "ArtifactRef",
+  "description": "Provider-neutral immutable reference to an artifact. Provider locations are resolved separately.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "uri",
+    "digest",
+    "size_bytes",
+    "kind"
+  ],
+  "properties": {
+    "uri": {
+      "type": "string",
+      "pattern": "^artifact://sha256/[0-9a-f]{64}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "size_bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "kind": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Opaque producer-owned category. Platform does not define its vocabulary."
+    },
+    "manifest_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Digest of a canonical multi-file directory index when the artifact is a directory; for a portable V2 directory this identifies the manifest bytes described by portable_directory_manifest.schema.json."
+    }
+  }
+}
