@@ -18,7 +18,7 @@ Product 契约快照，样例数据为合成数据。
 | Pydantic | `2.13.5` | PyPI | `MIT` | API and domain validation |
 | HTTPX | `0.28.1` | PyPI | `BSD-3-Clause` | Outbound Product handoff client |
 | Uvicorn | `0.37.0` | PyPI | `BSD-3-Clause` | ASGI server entrypoint |
-| `cyrene-plugin-runtime` | `0.2.0` | Plugins Git SHA `c3f75689ebb10b2e07b3816310e768d74ae6cc10` | `UNKNOWN` — upstream package has no license field or nearest license file | Direct typed Plugin invocation |
+| `cyrene-plugin-runtime` | `0.2.0` | Plugins Git SHA `3afbac4d386eb7a27f6778149187884820c0b7f6` | `UNKNOWN` — upstream package has no license field or nearest license file | Direct typed Plugin invocation |
 
 ## Development and test dependencies / 开发与测试依赖
 
