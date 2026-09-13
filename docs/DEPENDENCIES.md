@@ -15,13 +15,13 @@ not a legal opinion.
 - Direct dependency summary: [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
 
 The lockfile is the source of truth for the exact resolved version. The
-`c3f75689ebb10b2e07b3816310e768d74ae6cc10` Plugin revision is currently hosted
+`3afbac4d386eb7a27f6778149187884820c0b7f6` Plugin revision is currently hosted
 in a private repository, so an anonymous clean-clone build is not yet possible.
 That dependency must be published or replaced by a public immutable package
 before Catalyst can claim a complete public dependency closure.
 
 锁文件是精确解析版本的事实来源。当前
-`c3f75689ebb10b2e07b3816310e768d74ae6cc10` Plugin 修订版仍位于私有仓库，因而
+`3afbac4d386eb7a27f6778149187884820c0b7f6` Plugin 修订版仍位于私有仓库，因而
 匿名 clean clone 尚不能完成构建。Catalyst 只有在该依赖公开或替换为公开的不可变
 包后，才能宣称公开依赖闭包完整。
 
