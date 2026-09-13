@@ -5,10 +5,10 @@ repository:
   # Desired publication policy; live hosting visibility is verified separately.
   visibility: public
   source_owner: Dialogue & Synthesis Team
-  remote_default_branch: main
-  integration_branch: main
-  release_branch: main
-  default_branch: main
+  remote_default_branch: develop
+  integration_branch: develop
+  release_branch: release
+  default_branch: develop
 ownership:
   owns:
   - Dataset and DatasetVersion lifecycle state
@@ -40,8 +40,7 @@ authorities:
   release: github_releases
   deployment: dohorizon_azure
 trust:
-  # The pinned Plugins revision is private until the dependency closure is published.
-  public_requires_private: true
+  public_requires_private: false
 versioning:
   scheme: semver
   scope: repository
