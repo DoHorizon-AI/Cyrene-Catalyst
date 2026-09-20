@@ -6,13 +6,21 @@
 │                                                                     │
 │  模块职责：本地 MVP 的可替换 Artifact Plane 适配器。                     │
 └─────────────────────────────────────────────────────────────────────┘
+
+The plane delegates every content-addressed operation to the Platform Artifact
+SDK so that references published here resolve inside every other Product that
+shares the same artifact root.  No Product owns a private blob layout.
+| 制品平面把全部内容寻址操作委托给 Platform 制品 SDK，保证本产品发布的引用
+| 在同一 artifact root 下的其它产品中同样可解析；任何产品都不得持有私有 blob 布局。
 """
 
 from __future__ import annotations
 
 import hashlib
-import shutil
 from pathlib import Path
+
+from cy_artifacts import ArtifactError, ArtifactKind, LocalArtifactProvider
+from cy_artifacts import ArtifactRef as PlatformArtifactRef
 
 from cyrene_catalyst.domain import ArtifactRef
 from cyrene_catalyst.errors import CatalystError
@@ -28,14 +36,19 @@ def sha256_file(path: Path) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
+def _platform(reference: ArtifactRef) -> PlatformArtifactRef:
+    """Project the wire reference onto the Platform SDK identity. | 投影到平台制品标识。"""
+
+    return PlatformArtifactRef.from_dict(reference.model_dump(exclude_none=True))
+
+
 class LocalArtifactPlane:
-    """Filesystem adapter; the Product stores only returned references. | 本地制品适配器。"""
+    """Platform Artifact SDK adapter; the Product stores only returned references. | 制品适配器。"""
 
     def __init__(self, root: Path) -> None:
         self.root = root
-        self._objects = root / "sha256"
+        self._provider = LocalArtifactProvider(root)
         self._staging = root / ".staging"
-        self._objects.mkdir(parents=True, exist_ok=True)
         self._staging.mkdir(parents=True, exist_ok=True)
 
     def stage_path(self, name: str) -> Path:
@@ -71,22 +84,16 @@ class LocalArtifactPlane:
                 detail="The ArtifactRef URI and digest identify different content.",
                 status=422,
             )
-        path = self._objects / digest_hex
-        if not path.is_file():
+        try:
+            resolved = self._provider.resolve(_platform(reference))
+        except ArtifactError as exc:
             raise CatalystError(
                 code="CATALYST_ARTIFACT_UNAVAILABLE",
                 title="Artifact unavailable",
                 detail="The source artifact cannot be read.",
                 status=422,
-            )
-        if path.stat().st_size != reference.size_bytes or sha256_file(path) != reference.digest:
-            raise CatalystError(
-                code="CATALYST_ARTIFACT_DIGEST_MISMATCH",
-                title="Artifact integrity failure",
-                detail="The source size or digest does not match its ArtifactRef.",
-                status=422,
-            )
-        return path
+            ) from exc
+        return Path(resolved.location)
 
     def publish(
         self,
@@ -95,14 +102,13 @@ class LocalArtifactPlane:
     ) -> ArtifactRef:
         """Publish immutable bytes and return their reference. | 发布不可变字节并返回引用。"""
 
-        digest = sha256_file(staged_path)
-        digest_hex = digest.removeprefix("sha256:")
-        destination = self._objects / digest_hex
-        if not destination.exists():
-            shutil.copy2(staged_path, destination)
-        return ArtifactRef(
-            uri=f"artifact://sha256/{digest_hex}",
-            digest=digest,
-            size_bytes=destination.stat().st_size,
-            kind=kind,
-        )
+        try:
+            reference = self._provider.publish(staged_path, kind=ArtifactKind(kind))
+        except ArtifactError as exc:
+            raise CatalystError(
+                code="CATALYST_ARTIFACT_UNAVAILABLE",
+                title="Artifact unavailable",
+                detail="The artifact bytes could not be published.",
+                status=422,
+            ) from exc
+        return ArtifactRef(**reference.to_dict())

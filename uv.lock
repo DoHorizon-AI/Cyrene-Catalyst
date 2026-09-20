@@ -138,10 +138,16 @@ wheels = [
 ]
 
 [[package]]
+name = "cyrene-artifacts"
+version = "0.1.0"
+source = { git = "https://github.com/DoHorizon-AI/Cyrene-Platform.git?subdirectory=sdk%2Fpython%2Fcyrene_artifacts&rev=c59be6f2bd82489fbe933dadff84fc589e00afd9#c59be6f2bd82489fbe933dadff84fc589e00afd9" }
+
+[[package]]
 name = "cyrene-catalyst"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cyrene-artifacts" },
     { name = "cyrene-plugin-runtime" },
     { name = "fastapi" },
     { name = "httpx" },
@@ -163,6 +169,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cyrene-artifacts", git = "https://github.com/DoHorizon-AI/Cyrene-Platform.git?subdirectory=sdk%2Fpython%2Fcyrene_artifacts&rev=c59be6f2bd82489fbe933dadff84fc589e00afd9" },
     { name = "cyrene-plugin-runtime", git = "https://github.com/DoHorizon-AI/Cyrene-Plugins-Official.git?subdirectory=sdk%2Fpython%2Fcyrene_plugin_runtime&rev=3afbac4d386eb7a27f6778149187884820c0b7f6" },
     { name = "fastapi", specifier = "==0.141.1" },
     { name = "httpx", specifier = "==0.28.1" },
@@ -172,7 +179,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "cyrene-dataset-preparation", git = "https://github.com/DoHorizon-AI/Cyrene-Plugins-Official.git?subdirectory=plugins%2Ftools%2Fdataset-preparation&rev=3afbac4d386eb7a27f6778149187884820c0b7f6" },
+    { name = "cyrene-dataset-preparation", git = "https://github.com/DoHorizon-AI/Cyrene-Plugins-Official.git?subdirectory=plugins%2Ftools%2Fdataset-preparation&rev=cd6aad8599f8197fb33d631ec245af65e5964852" },
     { name = "duckdb", specifier = "==1.5.5" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "jsonschema", specifier = "==4.26.0" },
@@ -185,7 +192,7 @@ dev = [
 [[package]]
 name = "cyrene-dataset-preparation"
 version = "0.1.0"
-source = { git = "https://github.com/DoHorizon-AI/Cyrene-Plugins-Official.git?subdirectory=plugins%2Ftools%2Fdataset-preparation&rev=3afbac4d386eb7a27f6778149187884820c0b7f6#3afbac4d386eb7a27f6778149187884820c0b7f6" }
+source = { git = "https://github.com/DoHorizon-AI/Cyrene-Plugins-Official.git?subdirectory=plugins%2Ftools%2Fdataset-preparation&rev=cd6aad8599f8197fb33d631ec245af65e5964852#cd6aad8599f8197fb33d631ec245af65e5964852" }
 dependencies = [
     { name = "cyrene-plugin-runtime" },
     { name = "duckdb" },
