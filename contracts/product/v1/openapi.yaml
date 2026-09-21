@@ -83,6 +83,10 @@ paths:
         content:
           application/octet-stream:
             schema: {type: string, format: binary}
+          text/csv:
+            schema: {type: string, format: binary}
+          application/vnd.apache.parquet:
+            schema: {type: string, format: binary}
       responses:
         '201':
           description: Preparation staged
@@ -258,6 +262,8 @@ paths:
           content:
             application/jsonl: {}
             application/json: {}
+            text/csv: {}
+            application/vnd.apache.parquet: {}
         '404': {$ref: '#/components/responses/Problem'}
   /api/v1/preparations/{preparationId}/yield-draft:
     $ref: './lifecycle.openapi.yaml#/paths/~1api~1v1~1preparations~1{preparationId}~1yield-draft'
@@ -371,7 +377,7 @@ components:
         state: {enum: [STAGED, MAPPED, SPLIT, CONFIRMED, PUBLISHED]}
         source: {$ref: './generated/platform/artifact-ref.schema.json'}
         sourceFilename: {type: string}
-        format: {enum: [JSONL, JSON, TEXT]}
+        format: {enum: [JSONL, JSON, TEXT, CSV, PARQUET]}
         detectedFields: {type: array, items: {type: string}}
         rowCount: {type: integer, minimum: 0}
         mapping: {$ref: '#/components/schemas/MappingConfig'}
@@ -422,10 +428,12 @@ components:
       type: object
       required: [name, artifact, mediaType]
       properties:
-        name: {type: string}
+        name: {type: string, pattern: '^[a-z0-9_-]+\.(jsonl|json|csv|parquet)$'}
         artifact: {$ref: './generated/platform/artifact-ref.schema.json'}
         rowCount: {type: integer, minimum: 0}
-        mediaType: {type: string, enum: [application/jsonl, application/json]}
+        mediaType:
+          type: string
+          enum: [application/jsonl, application/json, text/csv, application/vnd.apache.parquet]
       additionalProperties: false
     YieldDraftStatus:
       type: object

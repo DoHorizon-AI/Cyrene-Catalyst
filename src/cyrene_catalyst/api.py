@@ -37,7 +37,7 @@ from cyrene_catalyst.domain import (
     RawPreview,
 )
 from cyrene_catalyst.engine import DataPreparationPort, data_preparation_from_environment
-from cyrene_catalyst.errors import CatalystError
+from cyrene_catalyst.errors import CatalystError, DataEngineFailure
 from cyrene_catalyst.lifecycle import (
     FeedbackImportRequest,
     HandoffReceipt,
@@ -104,6 +104,24 @@ def create_app(
         return JSONResponse(
             status_code=exc.status,
             content=problem.model_dump(by_alias=True, exclude_none=True, mode="json"),
+            media_type="application/problem+json",
+        )
+
+    @app.exception_handler(DataEngineFailure)
+    async def engine_error(request: Request, _exc: DataEngineFailure) -> JSONResponse:
+        problem = ProblemDetails(
+            type="https://errors.cyrene.dev/catalyst/data-processing-failed",
+            title="Data processing failed",
+            status=422,
+            detail="The dataset preparation engine rejected the requested data or schema.",
+            instance=request.url.path,
+            code="CATALYST_DATA_PROCESSING_FAILED",
+            retryable=False,
+            trace_id=request.state.trace_id,
+        )
+        return JSONResponse(
+            status_code=422,
+            content=problem.model_dump(by_alias=True, mode="json"),
             media_type="application/problem+json",
         )
 
@@ -208,6 +226,7 @@ def create_app(
             filename=filename,
             data=data,
             idempotency_key=idempotency_key,
+            content_type=request.headers.get("content-type"),
         )
 
     @app.get(

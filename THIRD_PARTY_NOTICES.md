@@ -18,13 +18,13 @@ Product 契约快照，样例数据为合成数据。
 | Pydantic | `2.13.5` | PyPI | `MIT` | API and domain validation |
 | HTTPX | `0.28.1` | PyPI | `BSD-3-Clause` | Outbound Product handoff client |
 | Uvicorn | `0.37.0` | PyPI | `BSD-3-Clause` | ASGI server entrypoint |
+| DuckDB | `1.5.5` | PyPI | `MIT` | CSV/Parquet wire-format bridge and tabular export writers |
 | `cyrene-plugin-runtime` | `0.2.0` | Plugins Git SHA `3afbac4d386eb7a27f6778149187884820c0b7f6` | `UNKNOWN` — upstream package has no license field or nearest license file | Direct typed Plugin invocation |
 
 ## Development and test dependencies / 开发与测试依赖
 
 | Package | Locked version | SPDX/license evidence | Use |
 |---|---:|---|---|
-| DuckDB | `1.5.5` | `MIT` | Test oracle for exported JSONL; not a Product processor |
 | `jsonschema` | `4.26.0` | `MIT` | Schema checks |
 | `openapi-spec-validator` | `0.9.0` | `Apache-2.0` | Contract checks |
 | `mypy` | `2.3.1` | `MIT` | Type checks |

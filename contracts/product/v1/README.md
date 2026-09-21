@@ -16,14 +16,15 @@ version, assign Product state, or become the source of lineage truth.
   API. The adapter is owned and packaged here, so Catalyst has no Platform
   source or SDK dependency.
 - Execution: Catalyst invokes the Plugins-owned `dataset.preparation.v1`
-  capability through `DataPreparationPort`. The reference implementation has no
-  in-tree parser or transformation fallback; DuckDB appears only in test
-  fixtures as an export-consumption oracle. Platform may resolve a package and
-  return an opaque `connection_ref`, but it does not carry Product payloads.
+  capability through `DataPreparationPort`. The reference implementation uses a
+  DuckDB-backed CSV/Parquet serialization bridge for the pinned provider
+  contract, but has no local mapping or transformation fallback. Platform may
+  resolve a package and return an opaque `connection_ref`, but it does not carry
+  Product payloads.
   执行：Catalyst 通过 `DataPreparationPort` 调用 Plugins 所有的
-  `dataset.preparation.v1` 能力。参考实现没有树内解析或变换回退；DuckDB 只在
-  测试夹具中作为导出结果消费校验器出现。Platform 可以解析包并返回不透明的
-  `connection_ref`，但不承载 Product 载荷。
+  `dataset.preparation.v1` 能力。参考实现仅为锁定的提供方契约使用基于 DuckDB
+  的 CSV/Parquet 序列化桥接，不包含本地映射或变换回退。Platform 可以解析包并
+  返回不透明的 `connection_ref`，但不承载 Product 载荷。
 - Kernel: execution evidence stays private to a future adapter; DatasetVersion
   state is not inferred from Kernel operation state.
 - Events: emitted from persisted resource changes and are never replayed as the

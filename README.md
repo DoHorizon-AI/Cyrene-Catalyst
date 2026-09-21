@@ -29,9 +29,10 @@ through a Product `DataPreparationPort` and persists provider-neutral `ArtifactR
 publishes and verifies those references through its replaceable local
 `LocalArtifactPlane` adapter. It has no Platform source or package dependency;
 Product payloads go directly to Yield or Echo and never through a Platform
-business proxy. Missing or invalid Plugin bindings fail closed, and Catalyst
-contains no local parsing/transformation fallback. Catalyst does not own
-Platform training/model contracts.
+business proxy. Missing or invalid Plugin bindings fail closed. Catalyst only
+provides a DuckDB-backed CSV/Parquet serialization bridge; mapping and
+transformation remain Plugin-owned. Catalyst does not own Platform
+training/model contracts.
 
 ## Clean-root publication posture / Clean-root 公开发布拓扑
 

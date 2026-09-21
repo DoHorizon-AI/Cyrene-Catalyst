@@ -20,6 +20,8 @@ Catalyst 交付的是 Yield-owned 契约上的一个训练草稿请求；**不�
 | `train.jsonl`   | `application/jsonl` | 训练样本数                  | 标准训练数据                  |
 | `val.jsonl`     | `application/jsonl`  | 验证样本数（可为 0）       | 标准验证数据                  |
 | `errors.jsonl`  | `application/jsonl`  | 剔除样本数（带原因，不静默） | 每行含 `rowIndex/reasonCode/field/message/excerpt` |
+| `train.csv` / `val.csv` / `errors.csv` | `text/csv` | 对应 JSONL 行数 | 严格导出模式列 |
+| `train.parquet` / `val.parquet` / `errors.parquet` | `application/vnd.apache.parquet` | 对应 JSONL 行数 | 严格导出模式列 |
 | `manifest.json` | `application/json`   | —                          | 来源/映射/划分/样本谱系/文件引用 |
 
 `manifest.json` 关键字段：
@@ -121,6 +123,9 @@ POST /api/v1/training-drafts/{draft_id}/actions/start   # 仅 Yield 运营/其�
 
 ## 7. 边界与不在本轮范围
 
-- PDF / Word / PowerPoint / Excel 仅在 `preparation.detect_format` 识别魔数并返回 `CATALYST_IMPORT_FORMAT_UNSUPPORTED`。未来的文档导入 Plugin 可以直接通过 Catalyst 的 Product/Plugin 契约接入，本轮不实现解析。
+- CSV / Parquet 导入与导出已支持；CSV 使用 `text/csv`，Parquet 使用
+  `application/vnd.apache.parquet`，导出列必须符合严格的 Product 模式校验。
+  PDF / Word / PowerPoint / Excel 仍不支持；未来的文档导入 Plugin 可以直接通过
+  Catalyst 的 Product/Plugin 契约接入。
 - 复杂合成数据、自动标注、大型质量平台不在本轮范围。
 - 嵌套字段路径映射（如行内已含 `conversations` 列表的 ShareGPT 导入）本轮不支持，映射仅针对顶层字段；对话组装按行级 + `groupBy` 连续段。

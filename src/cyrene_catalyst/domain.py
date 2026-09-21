@@ -57,6 +57,8 @@ class ImportFormat(StrEnum):
     JSONL = "JSONL"
     JSON = "JSON"
     TEXT = "TEXT"
+    CSV = "CSV"
+    PARQUET = "PARQUET"
 
 
 class PreparationState(StrEnum):
@@ -253,10 +255,15 @@ class SplitStats(ContractModel):
 class ExportFile(ContractModel):
     """One downloadable standard export inside a bundle. | 导出包内文件。"""
 
-    name: str = Field(pattern=r"^[a-z0-9_-]+\.(jsonl|json)$")
+    name: str = Field(pattern=r"^[a-z0-9_-]+\.(jsonl|json|csv|parquet)$")
     artifact: ArtifactRef
     row_count: int | None = Field(default=None, ge=0)
-    media_type: Literal["application/jsonl", "application/json"]
+    media_type: Literal[
+        "application/jsonl",
+        "application/json",
+        "text/csv",
+        "application/vnd.apache.parquet",
+    ]
 
 
 class Preparation(ContractModel):

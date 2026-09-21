@@ -12,6 +12,7 @@ dependencies = [
   "httpx==0.28.1",
   "fastapi==0.141.1",
   "pydantic==2.13.5",
+  "duckdb==1.5.5",
   "uvicorn==0.37.0",
   "cyrene-artifacts @ git+https://github.com/DoHorizon-AI/Cyrene-Platform.git@c59be6f2bd82489fbe933dadff84fc589e00afd9#subdirectory=sdk/python/cyrene_artifacts",
   "cyrene-plugin-runtime @ git+https://github.com/DoHorizon-AI/Cyrene-Plugins-Official.git@3afbac4d386eb7a27f6778149187884820c0b7f6#subdirectory=sdk/python/cyrene_plugin_runtime",
@@ -23,7 +24,6 @@ cyrene-catalyst = "cyrene_catalyst.cli:main"
 [dependency-groups]
 dev = [
   "cyrene-dataset-preparation @ git+https://github.com/DoHorizon-AI/Cyrene-Plugins-Official.git@cd6aad8599f8197fb33d631ec245af65e5964852#subdirectory=plugins/tools/dataset-preparation",
-  "duckdb==1.5.5",
   "httpx==0.28.1",
   "jsonschema==4.26.0",
   "mypy==2.3.1",

@@ -213,6 +213,9 @@ def test_text_import_and_literal_instruction(tmp_path: Path) -> None:
         prep = _upload(client, dataset_id, "plain.txt", b"hello\nworld\n\n")
         assert prep["format"] == "TEXT"
         assert prep["rowCount"] == 2
+        raw = client.get(f"/api/v1/preparations/{prep['id']}/samples?stage=raw")
+        assert raw.status_code == 200, raw.text
+        assert raw.json()["total"] == 2
         mapped = client.patch(
             f"/api/v1/preparations/{prep['id']}/mapping",
             json={
@@ -229,4 +232,16 @@ def test_text_import_and_literal_instruction(tmp_path: Path) -> None:
             },
         ).json()
         assert mapped["report"]["uniqueSamples"] == 2
+    _close(client.app)
+
+
+def test_json_raw_preview_preserves_json_import_format(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    with client:
+        dataset_id = _make_dataset(client)
+        prep = _upload(client, dataset_id, "records.json", b'[{"text":"hello"},{"text":"world"}]')
+        assert prep["format"] == "JSON"
+        raw = client.get(f"/api/v1/preparations/{prep['id']}/samples?stage=raw")
+        assert raw.status_code == 200, raw.text
+        assert raw.json()["total"] == 2
     _close(client.app)
