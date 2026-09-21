@@ -347,3 +347,19 @@ class PublishPreparationResponse(ContractModel):
 
     preparation: Preparation
     dataset_version: DatasetVersion
+
+
+class PreviewRow(ContractModel):
+    """One row in the dataset version preview."""
+
+    index: int = Field(ge=0)
+    mapped: dict[str, Any]
+    raw: dict[str, Any]
+
+
+class DatasetPreview(ContractModel):
+    """Paginated dataset version preview with mapped and raw fields."""
+
+    version_id: UUID
+    total_rows: int = Field(ge=0)
+    rows: list[PreviewRow]

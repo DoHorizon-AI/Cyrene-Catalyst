@@ -22,9 +22,11 @@ import duckdb
 
 from cyrene_catalyst.artifacts import LocalArtifactPlane
 from cyrene_catalyst.domain import (
+    ArtifactRef,
     CreateDatasetRequest,
     CreateDatasetVersionRequest,
     Dataset,
+    DatasetPreview,
     DatasetVersion,
     DatasetVersionState,
     ErrorPreview,
@@ -38,12 +40,19 @@ from cyrene_catalyst.domain import (
     Preparation,
     PreparationReport,
     PreparationState,
+    PreviewRow,
     ProductFailure,
     RawPreview,
     SplitConfig,
     utc_now,
 )
-from cyrene_catalyst.engine import DataPreparationPort, PreparationOutput, SourceInspection
+from cyrene_catalyst.engine import (
+    DataPreparationPort,
+    PreparationOutput,
+    SourceInspection,
+    _has_parquet_magic,
+    _json_native,
+)
 from cyrene_catalyst.errors import CatalystError, DataEngineFailure
 from cyrene_catalyst.store import CatalystStore
 
@@ -208,6 +217,72 @@ def _write_parquet_export(path: Path, rows: list[dict[str, Any]], fields: list[s
         jsonl_path.unlink(missing_ok=True)
 
 
+def _apply_mapping_to_row(
+    raw: dict[str, Any], mapping: MappingConfig | dict[str, Any] | None
+) -> dict[str, Any]:
+    """Project raw row fields into mapped training shape according to mapping config."""
+    if mapping is None:
+        mapped: dict[str, Any] = {}
+        for key in ("instruction", "input", "output", "messages", "prompt", "response"):
+            if key in raw and raw[key] is not None:
+                mapped[key] = raw[key]
+        return mapped if mapped else dict(raw)
+
+    if isinstance(mapping, dict):
+        mapping = MappingConfig.model_validate(mapping)
+
+    mapped = {}
+    if mapping.mode == "instruction":
+        if mapping.instruction:
+            if mapping.instruction.field and mapping.instruction.field in raw:
+                mapped["instruction"] = raw[mapping.instruction.field]
+            elif mapping.instruction.literal is not None:
+                mapped["instruction"] = mapping.instruction.literal
+        elif "instruction" in raw:
+            mapped["instruction"] = raw["instruction"]
+
+        if mapping.input:
+            if mapping.input.field and mapping.input.field in raw:
+                mapped["input"] = raw[mapping.input.field]
+            elif mapping.input.literal is not None:
+                mapped["input"] = mapping.input.literal
+        elif "input" in raw:
+            mapped["input"] = raw["input"]
+
+        if mapping.output:
+            if mapping.output.field and mapping.output.field in raw:
+                mapped["output"] = raw[mapping.output.field]
+            elif mapping.output.literal is not None:
+                mapped["output"] = mapping.output.literal
+        elif "output" in raw:
+            mapped["output"] = raw["output"]
+    elif mapping.mode == "conversation":
+        if "messages" in raw:
+            mapped["messages"] = raw["messages"]
+        else:
+            val_f = mapping.conversation_value_field or "content"
+            from_f = mapping.conversation_from_field or "role"
+            if val_f in raw and from_f in raw:
+                mapped["messages"] = [{"role": raw[from_f], "content": raw[val_f]}]
+            elif "prompt" in raw and "response" in raw:
+                mapped["messages"] = [
+                    {"role": "user", "content": raw["prompt"]},
+                    {"role": "assistant", "content": raw["response"]},
+                ]
+            else:
+                for key in ("instruction", "output", "messages"):
+                    if key in raw:
+                        mapped[key] = raw[key]
+
+    if not mapped:
+        for key in ("instruction", "input", "output", "messages"):
+            if key in raw:
+                mapped[key] = raw[key]
+    if not mapped:
+        mapped = dict(raw)
+    return mapped
+
+
 class CatalystService:
     """Own Dataset state while delegating bytes and computation. | Dataset 状态权威服务。"""
 
@@ -355,6 +430,136 @@ class CatalystService:
                 status=404,
             )
         return version
+
+    def preview_version(
+        self, version_id: UUID, *, limit: int = 10, offset: int = 0
+    ) -> DatasetPreview:
+        """Preview paginated samples of a published DatasetVersion. | 预览样本。"""
+
+        version = self.get_version(version_id)
+        if version.output is None:
+            raise CatalystError(
+                code="CATALYST_ARTIFACT_UNAVAILABLE",
+                title="Artifact unavailable",
+                detail="DatasetVersion has no published output artifact.",
+                status=503,
+            )
+
+        try:
+            output_path = self.artifacts.resolve(version.output)
+        except Exception as exc:
+            raise CatalystError(
+                code="CATALYST_ARTIFACT_UNAVAILABLE",
+                title="Artifact unavailable",
+                detail=f"Output artifact could not be resolved: {exc}",
+                status=503,
+            ) from exc
+
+        if not output_path.exists():
+            raise CatalystError(
+                code="CATALYST_ARTIFACT_UNAVAILABLE",
+                title="Artifact unavailable",
+                detail="Output artifact file does not exist on disk.",
+                status=503,
+            )
+
+        parquet_path: Path | None = None
+        mapping: dict[str, Any] | None = None
+
+        if _has_parquet_magic(output_path) or output_path.suffix.casefold() in {".parquet", ".pq"}:
+            parquet_path = output_path
+        else:
+            try:
+                manifest = json.loads(output_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                raise CatalystError(
+                    code="CATALYST_ARTIFACT_UNAVAILABLE",
+                    title="Artifact unavailable",
+                    detail=f"Output artifact is neither Parquet nor valid JSON manifest: {exc}",
+                    status=503,
+                ) from exc
+
+            mapping = manifest.get("mapping")
+            files = manifest.get("files", {})
+            target_file = files.get("train.parquet")
+            if not target_file:
+                for fname, fref in files.items():
+                    if fname.endswith(".parquet"):
+                        target_file = fref
+                        break
+            if target_file:
+                try:
+                    clean_target = dict(target_file)
+                    if "sizeBytes" in clean_target:
+                        clean_target["size_bytes"] = clean_target.pop("sizeBytes")
+                    if "manifestDigest" in clean_target:
+                        clean_target["manifest_digest"] = clean_target.pop("manifestDigest")
+                    ref = ArtifactRef.model_validate(clean_target)
+                    parquet_path = self.artifacts.resolve(ref)
+                except Exception as exc:
+                    raise CatalystError(
+                        code="CATALYST_ARTIFACT_UNAVAILABLE",
+                        title="Artifact unavailable",
+                        detail=(
+                            f"Parquet artifact reference invalid or could not be resolved: {exc}"
+                        ),
+                        status=503,
+                    ) from exc
+
+        if parquet_path is None or not parquet_path.exists():
+            raise CatalystError(
+                code="CATALYST_ARTIFACT_UNAVAILABLE",
+                title="Artifact unavailable",
+                detail="No readable Parquet artifact found for this version.",
+                status=503,
+            )
+
+        if mapping is None:
+            for prep in self.store.list_preparations(version.dataset_id):
+                if prep.published_version_id == version.id and prep.mapping is not None:
+                    mapping = prep.mapping.model_dump(by_alias=True, exclude_none=True)
+                    break
+
+        connection = duckdb.connect()
+        try:
+            count_res = connection.execute(
+                "SELECT count(*) FROM read_parquet(?)", [str(parquet_path)]
+            ).fetchone()
+            total_rows = int(count_res[0]) if count_res is not None else 0
+
+            relation = connection.execute(
+                "SELECT * FROM read_parquet(?) LIMIT ? OFFSET ?",
+                [str(parquet_path), limit, offset],
+            )
+            columns = [desc[0] for desc in relation.description]
+            fetched = relation.fetchall()
+        except duckdb.Error as exc:
+            raise CatalystError(
+                code="CATALYST_ARTIFACT_UNAVAILABLE",
+                title="Parquet artifact unreadable",
+                detail=f"DuckDB failed to read Parquet artifact: {exc}",
+                status=503,
+            ) from exc
+        finally:
+            connection.close()
+
+        preview_rows: list[PreviewRow] = []
+        for i, row_tuple in enumerate(fetched):
+            raw_row = {col: _json_native(val) for col, val in zip(columns, row_tuple, strict=True)}
+            mapped_row = _apply_mapping_to_row(raw_row, mapping)
+            preview_rows.append(
+                PreviewRow(
+                    index=offset + i,
+                    mapped=mapped_row,
+                    raw=raw_row,
+                )
+            )
+
+        return DatasetPreview(
+            version_id=version.id,
+            total_rows=total_rows,
+            rows=preview_rows,
+        )
 
     # ── Preparation workflow ────────────────────────────────────────────
 

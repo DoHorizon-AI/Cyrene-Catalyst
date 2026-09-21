@@ -137,6 +137,45 @@ paths:
               schema:
                 $ref: './dataset-version.schema.json'
         '404': {$ref: '#/components/responses/Problem'}
+  /api/v1/dataset-versions/{versionId}/preview:
+    get:
+      operationId: previewDatasetVersion
+      parameters:
+        - name: versionId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 100, default: 10}
+        - name: offset
+          in: query
+          required: false
+          schema: {type: integer, minimum: 0, default: 0}
+      responses:
+        '200':
+          description: Dataset preview
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [versionId, totalRows, rows]
+                properties:
+                  versionId: {type: string, format: uuid}
+                  totalRows: {type: integer, minimum: 0}
+                  rows:
+                    type: array
+                    items:
+                      type: object
+                      required: [index, mapped, raw]
+                      properties:
+                        index: {type: integer, minimum: 0}
+                        mapped: {type: object}
+                        raw: {type: object}
+        '404': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
   /api/v1/preparations/{preparationId}:
     parameters:
       - $ref: '#/components/parameters/PreparationId'

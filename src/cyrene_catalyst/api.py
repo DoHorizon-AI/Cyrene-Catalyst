@@ -28,6 +28,7 @@ from cyrene_catalyst.domain import (
     CreateDatasetRequest,
     CreateDatasetVersionRequest,
     Dataset,
+    DatasetPreview,
     DatasetVersion,
     ErrorPreview,
     NormalizedPreview,
@@ -183,6 +184,18 @@ def create_app(
     )
     def get_version(version_id: Annotated[UUID, ApiPath(alias="versionId")]) -> DatasetVersion:
         return service.get_version(version_id)
+
+    @app.get(
+        "/api/v1/dataset-versions/{versionId}/preview",
+        response_model=DatasetPreview,
+        response_model_exclude_none=True,
+    )
+    def preview_version(
+        version_id: Annotated[UUID, ApiPath(alias="versionId")],
+        limit: Annotated[int, Query(ge=1, le=100)] = 10,
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> DatasetPreview:
+        return service.preview_version(version_id, limit=limit, offset=offset)
 
     @app.get("/", include_in_schema=False, response_class=HTMLResponse)
     def root_ui() -> HTMLResponse:
