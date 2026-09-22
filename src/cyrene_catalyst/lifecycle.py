@@ -97,7 +97,14 @@ class LifecycleActions:
                 "V1 supports published instruction/Alpaca JSONL preparations.",
             )
         exports = {item.name: item for item in preparation.exports}
-        train = exports["train.jsonl"]
+        train = exports.get("train.jsonl")
+        validation = exports.get("val.jsonl")
+        if train is None or validation is None:
+            raise _error(
+                "CATALYST_STATE_CORRUPT",
+                500,
+                "The published DatasetVersion is missing its canonical JSONL exports.",
+            )
         if not train.row_count:
             raise _error(
                 "CATALYST_YIELD_EMPTY_TRAINING_DATA",
@@ -110,7 +117,7 @@ class LifecycleActions:
             "resourceVersion": version.resource_version,
             "format": "ALPACA_JSONL",
             "artifact": train.artifact.model_dump(exclude_none=True),
-            "validationArtifact": exports["val.jsonl"].artifact.model_dump(exclude_none=True),
+            "validationArtifact": validation.artifact.model_dump(exclude_none=True),
             "provenanceRefs": preparation.source_refs,
         }
         try:
@@ -125,13 +132,18 @@ class LifecycleActions:
                 },
             )
             response.raise_for_status()
+            if response.status_code != 201:
+                raise ValueError("Yield did not return the contractually required 201 status")
             target = response.json()
             reference = ResourceRef.model_validate(target["resourceRef"])
-            if str(reference.id) != target["id"] or target["state"] not in {
-                "DRAFT",
-                "PREPARED",
-                "STARTED",
-            }:
+            returned_source = target["datasetVersion"]
+            if (
+                str(reference.id) != target["id"]
+                or reference.uri != f"cyrene://yield/training-drafts/{reference.id}"
+                or target["state"] not in {"DRAFT", "PREPARED", "STARTED"}
+                or returned_source.get("id") != str(version.id)
+                or returned_source.get("resourceVersion") != version.resource_version
+            ):
                 raise ValueError("Invalid target draft identity or state")
         except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
             raise _error(
@@ -154,6 +166,13 @@ class LifecycleActions:
             return self._import_feedback(command, key)
 
     def _import_feedback(self, command: FeedbackImportRequest, key: str | None) -> HandoffReceipt:
+        expected_source_uri = f"cyrene://echo/feedback-sets/{command.source_ref.id}"
+        if command.source_ref.uri != expected_source_uri:
+            raise _error(
+                "CATALYST_FEEDBACK_SOURCE_INVALID",
+                422,
+                "Feedback sourceRef must identify the matching Echo feedback set.",
+            )
         key = key or f"echo-feedback:{command.source_ref.id}:{command.source_ref.resource_version}"
         digest = hashlib.sha256(command.model_dump_json().encode()).hexdigest()
         replay = self.service.store.resolve_idempotency("feedback-import", key, digest)

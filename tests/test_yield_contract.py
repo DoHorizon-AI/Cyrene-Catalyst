@@ -111,7 +111,7 @@ class _YieldStub:
                         "body": body,
                     }
                 )
-                if outer.response_status != 201:
+                if outer.response_status not in {200, 201}:
                     self._respond(
                         outer.response_status,
                         {
@@ -138,7 +138,7 @@ class _YieldStub:
                     "createdAt": "2026-09-11T12:00:00+00:00",
                 }
                 outer.draft_response = draft
-                self._respond(201, draft)
+                self._respond(outer.response_status, draft)
 
             def _respond(self, status: int, payload: dict[str, Any]) -> None:
                 data = json.dumps(payload).encode("utf-8")
@@ -336,6 +336,7 @@ def test_send_to_yield_fails_closed_when_yield_is_unreachable(tmp_path: Path) ->
 @pytest.mark.parametrize(
     "stub_kwargs",
     [
+        {"response_status": 200},
         {"response_status": 422},
         {"response_state": "COMPLETED"},
         {"resource_ref_mismatch": True},
