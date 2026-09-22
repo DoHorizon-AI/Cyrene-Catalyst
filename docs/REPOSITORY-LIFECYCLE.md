@@ -9,14 +9,13 @@ This document provides self-contained lifecycle, boundary, and authority specifi
 visibility **`public`**. This clean-root source payload becomes the canonical
 public history at the parentless `main` root commit. The former complete history
 is retained only in the private `Cyrene-Catalyst-history-archive`; it is not a
-public source, dependency, or release input. The live GitHub repository remains
-private until an owner performs the visibility change; this document does not
-perform that external action.
+public source, dependency, or release input. The live GitHub repository is
+public.
 
 **cyrene-catalyst** 属于 **`PUBLIC_PRODUCT`**，目标公开可见性为 **`public`**。本
 clean-root 源码内容将在无父 `main` 根提交处成为公开规范历史。原完整历史仅保留在
 私有的 `Cyrene-Catalyst-history-archive` 中，不属于公开源码、依赖或 release 输入。
-当前 GitHub 仓库仍为 private，必须由所有者执行可见性切换；本文档不会执行外部操作。
+当前 GitHub 仓库已公开。
 
 ### What This Repository OWNS:
 - Dataset and DatasetVersion lifecycle state
@@ -53,18 +52,17 @@ clean-root 源码内容将在无父 `main` 根提交处成为公开规范历史�
 ---
 
 ## 4. Public / Private Trust Boundary & Access Matrix
-- **Target repository access**: Public source, public pull-request checks, and no private token requirement for ordinary local checks once the dependency gate is closed.
-- **Live hosting state**: The GitHub repository is still private pending an owner visibility change.
-- **Dependency boundary**: The pinned Plugins revision is private and its package metadata does not yet grant a license; anonymous clean-clone/build remains blocked until that closure is published or replaced.
+- **Target repository access**: Public source, public checks, and no private token requirement for ordinary local checks.
+- **Live hosting state**: The GitHub repository is public.
+- **Dependency boundary**: The pinned Plugins revision is public and immutable; its package metadata does not yet grant a license, so binary publication remains blocked.
 - **Product boundary**: Catalyst owns its replaceable local Artifact Plane adapter and exchanges only provider-neutral `ArtifactRef` values. Product payloads and engine calls stay within Catalyst or use direct Product/Plugin handoffs.
 - **Internal / Delivery Maintainer**: Azure DevOps is reserved for manual deployment or private integration work; it is not the automatic source CI authority.
 
 ## 5. Public release readiness / 公开发布准备度
 
-The source tree is the clean-root payload for a future visibility change, but it
-is not yet a complete public release. Before switching GitHub visibility,
-maintainers must make the Plugins dependency anonymously reachable, review its
-license metadata, verify that the vendored Yield snapshot remains byte-identical
+The source tree is public, but it is not yet a complete binary release. Before
+binary publication, maintainers must resolve the Plugins license metadata,
+verify that the vendored Yield snapshot remains byte-identical
 to the reachable owner ref recorded in `contracts/vendor/yield-product-v1/PROVENANCE.md`
 (currently Yield `main@6fea8f835ce2561aaed4b0d9996856f6a3ef1ee6`), and run the
 GitHub Actions workflows at the exact release SHA. Local tests and a manual Azure
@@ -72,8 +70,8 @@ run do not replace those gates. The former third-party game-dialogue corpus is
 intentionally excluded from this source tree and is not approved for public
 redistribution.
 
-源码树是未来切换可见性的 clean-root 内容，但还不是完整公开 release。切换 GitHub
-可见性前，维护者必须让 Plugins 依赖可匿名访问、审查其许可证元数据，并核验
+源码树已经公开，但还不是完整的二进制 release。二进制发布前，维护者必须补齐
+Plugins 许可证元数据，并核验
 `contracts/vendor/yield-product-v1/PROVENANCE.md` 记录的 vendored Yield 快照仍与
 owner 可达引用逐字节一致（当前为 Yield `main@6fea8f835ce2561aaed4b0d9996856f6a3ef1ee6`），
 同时在精确 release SHA 上运行 GitHub Actions。本地测试或手动 Azure 运行不能替代这些

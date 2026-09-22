@@ -27,12 +27,12 @@ does not grant permission to redistribute it.
 The runtime invokes the Plugins-owned `dataset.preparation.v1` capability
 through a Product `DataPreparationPort` and persists provider-neutral `ArtifactRef` values. Catalyst
 publishes and verifies those references through its replaceable local
-`LocalArtifactPlane` adapter. It has no Platform source or package dependency;
+`LocalArtifactPlane` adapter backed by the pinned Platform Artifact SDK.
 Product payloads go directly to Yield or Echo and never through a Platform
-business proxy. Missing or invalid Plugin bindings fail closed. Catalyst only
-provides a DuckDB-backed CSV/Parquet serialization bridge; mapping and
-transformation remain Plugin-owned. Catalyst does not own Platform
-training/model contracts.
+business proxy. Missing or invalid Plugin bindings fail closed. The Plugin owns
+JSON/JSONL/text/CSV/Parquet parsing and all JSONL/CSV/Parquet export writing;
+Catalyst verifies receipts and publishes immutable references. Catalyst does
+not own Platform training/model contracts.
 
 ## Clean-root publication posture / Clean-root 公开发布拓扑
 
@@ -42,19 +42,19 @@ commit created from this snapshot. The former complete repository history is
 retained only in the private `Cyrene-Catalyst-history-archive`; it is not part of
 the public source, a dependency, or a release input.
 
-The GitHub repository remains private until an owner changes its visibility. A
-complete anonymous clone/build is blocked until the pinned Plugins revision is
-publicly reachable and its package license metadata is reviewed. Public source
-visibility, binary distribution, hosted CI, and local verification are separate
-gates; none is implied by another.
+The GitHub repository and pinned source revisions are publicly reachable, so an
+anonymous clone can resolve the locked graph. Binary distribution remains
+blocked until the Plugins package license metadata is explicitly declared and
+reviewed. Public source visibility, binary distribution, hosted CI, and local
+verification are separate gates; none is implied by another.
 
 本仓库是 Catalyst 公开 release 的 clean-root 源码内容；公开规范历史从由此快照
 创建的无父 `main` 根提交开始。原完整提交历史仅保留在私有的
 `Cyrene-Catalyst-history-archive` 中，不属于公开源码、依赖或 release 输入。
 
-GitHub 仓库仍保持 private，必须由所有者切换可见性。匿名 clone/build 还需要等待
-锁定的 Plugins 修订版公开可达并完成其包许可证审查。公开源码可见性、二进制分发、
-Hosted CI 与本地验证是彼此独立的门禁，不能相互替代。
+GitHub 仓库与锁定的源码修订版均已公开可达，匿名 clone 可以解析锁定依赖图。
+二进制分发仍须等待 Plugins 包明确声明并完成许可证审查。公开源码可见性、二进制
+分发、Hosted CI 与本地验证是彼此独立的门禁，不能相互替代。
 
 ## Local verification / 本地验证
 

@@ -14,16 +14,17 @@ not a legal opinion.
 - Repository license grant: [`LICENSE`](../LICENSE).
 - Direct dependency summary: [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
 
-The lockfile is the source of truth for the exact resolved version. The
-`3afbac4d386eb7a27f6778149187884820c0b7f6` Plugin revision is currently hosted
-in a private repository, so an anonymous clean-clone build is not yet possible.
-That dependency must be published or replaced by a public immutable package
-before Catalyst can claim a complete public dependency closure.
+The lockfile is the source of truth for the exact resolved version. The pinned
+Plugins revision `4d6f80f1117ab8f7ba389eb9b9049085335ffe2b` is publicly reachable,
+and an anonymous clean clone can resolve it. The upstream package manifests do
+not yet declare a license, so Catalyst cannot claim complete binary-publication
+license closure.
 
 锁文件是精确解析版本的事实来源。当前
-`3afbac4d386eb7a27f6778149187884820c0b7f6` Plugin 修订版仍位于私有仓库，因而
-匿名 clean clone 尚不能完成构建。Catalyst 只有在该依赖公开或替换为公开的不可变
-包后，才能宣称公开依赖闭包完整。
+锁文件是精确解析版本的事实来源。锁定的 Plugins 修订版
+`4d6f80f1117ab8f7ba389eb9b9049085335ffe2b` 已公开可达，匿名 clean clone 可以解析；
+但上游包 manifest 尚未声明许可证，因此 Catalyst 仍不能宣称二进制公开发布的许可证
+闭包完整。
 
 ## SBOM procedure / SBOM 流程
 
@@ -64,10 +65,10 @@ SBOM、完整的已解析依赖许可证记录，并为每个非 registry 源作
 
 ## Review gates / 评审门禁
 
-Before publication, maintainers must verify that every direct dependency and
-every non-registry source has an explicit license record, that the Plugins
-dependency is reachable anonymously, and that the generated SBOM matches the
-tagged `uv.lock`. The current unresolved entries are listed in
+Before binary publication, maintainers must verify that every direct dependency
+and every non-registry source has an explicit license record and that the
+generated SBOM matches the tagged `uv.lock`. Anonymous Plugins reachability is
+now verified; the remaining unresolved entries are listed in
 [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
 
 公开前，维护者必须确认每个直接依赖和每个非 registry 源都有明确许可证记录，
