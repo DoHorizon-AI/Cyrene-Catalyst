@@ -56,7 +56,8 @@ Yield 是训练输入不变量与训练状态的唯一权威（见 Yield 的
 - 必需列：`conversations`（非空列表，元素含 `from`/`value`，`value` 非空）
 
 ### 可消费性证明
-- 发布时用 DuckDB `read_json(format="newline_delimited")` 真实读取 `train.jsonl`/`val.jsonl` 校验行数（`verify_jsonl_rows`）。
+- 发布时 Catalyst 对 Plugin 写出的 `train.jsonl`/`val.jsonl` 执行逐行 JSON、严格模式、
+  行数、摘要与大小校验，并确认内容与 Plugin 结果投影一致。
 - 测试 `tests/test_preparation.py::test_end_to_end_publish_and_consumable_export` 用 DuckDB
   读取导出，并断言每行的 `instruction`/`output` 为非空字符串。
 - `tests/test_yield_contract.py` 以 Yield-owned 契约快照校验实际发出的

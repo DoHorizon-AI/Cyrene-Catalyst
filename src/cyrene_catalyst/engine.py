@@ -11,19 +11,14 @@
 from __future__ import annotations
 
 import csv
-import datetime
-import decimal
 import hashlib
 import json
 import os
 import tempfile
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-import duckdb
 from pydantic import ValidationError
 
 from cyrene_catalyst.domain import (
@@ -134,16 +129,16 @@ class DirectPluginDataPreparationPort:
         source_format_hint = (
             format_hint if format_hint in _TABULAR_FORMATS else _tabular_format(source)
         )
-        with (
-            _plugin_source(source, source_format_hint) as plugin_source,
-            _result_file() as result_path,
-        ):
+        with _result_file() as result_path:
+            request = {
+                "source_path": str(source.resolve()),
+                "result_path": str(result_path),
+            }
+            if source_format_hint is not None:
+                request["format_hint"] = source_format_hint.value
             receipt = self._invoke(
                 "inspect",
-                {
-                    "source_path": str(plugin_source.resolve()),
-                    "result_path": str(result_path),
-                },
+                request,
             )
             document = _read_verified_result(result_path, receipt)
         rows = _mapping_list(document.get("rows"), "rows")
@@ -156,10 +151,8 @@ class DirectPluginDataPreparationPort:
         if row_count != len(rows):
             raise DataEngineFailure("Plugin inspection row count is inconsistent")
         _validate_inspection_schema(rows, detected_fields)
-        if source_format_hint is not None:
-            if inspected_format is not ImportFormat.JSONL:
-                raise DataEngineFailure("Tabular source bridge did not produce JSONL")
-            inspected_format = source_format_hint
+        if source_format_hint is not None and inspected_format is not source_format_hint:
+            raise DataEngineFailure("Plugin inspection format does not match the requested hint")
         return SourceInspection(inspected_format, rows, detected_fields, row_count)
 
     def prepare(
@@ -174,25 +167,19 @@ class DirectPluginDataPreparationPort:
     ) -> PreparationOutput:
         """Execute preparation and validate every owner-produced projection."""
 
-        source_format_hint = source_format if source_format in _TABULAR_FORMATS else None
-        with _plugin_source(source, source_format_hint) as plugin_source:
-            request: dict[str, Any] = {
-                "source_path": str(plugin_source.resolve()),
-                "source_format": (
-                    ImportFormat.JSONL.value
-                    if source_format_hint is not None
-                    else source_format.value
-                ),
-                "mapping": mapping.model_dump(by_alias=False, exclude_none=True),
-                "normalization": normalization.model_dump(by_alias=False),
-                "split": split.model_dump(by_alias=False) if split else None,
-            }
-            if output_dir is not None:
-                request["output_dir"] = str(output_dir.resolve())
-            with _result_file() as result_path:
-                request["result_path"] = str(result_path)
-                receipt = self._invoke("prepare", request)
-                document = _read_verified_result(result_path, receipt)
+        request: dict[str, Any] = {
+            "source_path": str(source.resolve()),
+            "source_format": source_format.value,
+            "mapping": mapping.model_dump(by_alias=False, exclude_none=True),
+            "normalization": normalization.model_dump(by_alias=False),
+            "split": split.model_dump(by_alias=False) if split else None,
+        }
+        if output_dir is not None:
+            request["output_dir"] = str(output_dir.resolve())
+        with _result_file() as result_path:
+            request["result_path"] = str(result_path)
+            receipt = self._invoke("prepare", request)
+            document = _read_verified_result(result_path, receipt)
         samples = [
             _sample(value, index)
             for index, value in enumerate(_mapping_list(document.get("samples"), "samples"))
@@ -222,16 +209,13 @@ class DirectPluginDataPreparationPort:
         """Execute the Product transform and verify the produced bytes."""
 
         source_format = _tabular_format(source)
-        if source_format in _TABULAR_FORMATS:
-            return _transform_tabular(source, destination, source_format)
-
-        receipt = self._invoke(
-            "transform",
-            {
-                "source_path": str(source.resolve()),
-                "destination_path": str(destination.resolve()),
-            },
-        )
+        request = {
+            "source_path": str(source.resolve()),
+            "destination_path": str(destination.resolve()),
+        }
+        if source_format is not None:
+            request["source_format"] = source_format.value
+        receipt = self._invoke("transform", request)
         expected_digest = _text(receipt.get("output_digest"), "output_digest")
         expected_size = _non_negative_integer(receipt.get("output_size"), "output_size")
         if not destination.is_file() or destination.stat().st_size != expected_size:
@@ -466,133 +450,6 @@ def _looks_like_csv(source: Path) -> bool:
     )
 
 
-@contextmanager
-def _plugin_source(source: Path, source_format: ImportFormat | None) -> Iterator[Path]:
-    """Bridge tabular bytes to the pinned Plugin's JSONL input contract.
-
-    The bridge only changes the serialization envelope. Mapping, normalization,
-    deduplication, splitting, and output ownership remain in the Plugin.
-    """
-
-    if source_format not in _TABULAR_FORMATS:
-        yield source
-        return
-
-    rows = _read_tabular_rows(source, source_format)
-    if not rows:
-        raise DataEngineFailure("tabular source contains no rows")
-    descriptor, name = tempfile.mkstemp(prefix="catalyst-tabular-", suffix=".jsonl")
-    os.close(descriptor)
-    bridge = Path(name).resolve()
-    try:
-        bridge.write_bytes(b"".join(_canonical_json(row) + b"\n" for row in rows))
-        yield bridge
-    finally:
-        bridge.unlink(missing_ok=True)
-
-
-def _read_tabular_rows(source: Path, source_format: ImportFormat) -> list[dict[str, Any]]:
-    """Read CSV or Parquet into the Plugin's generic row projection."""
-
-    _validate_tabular_source(source, source_format)
-    connection = duckdb.connect()
-    try:
-        relation = _tabular_relation(connection, source, source_format)
-        columns = list(relation.columns)
-        _validate_column_names(columns)
-        return [
-            {column: _json_native(value) for column, value in zip(columns, values, strict=True)}
-            for values in relation.fetchall()
-        ]
-    except duckdb.Error as exc:
-        raise DataEngineFailure("tabular source could not be parsed") from exc
-    finally:
-        connection.close()
-
-
-def _transform_tabular(
-    source: Path, destination: Path, source_format: ImportFormat
-) -> EngineResult:
-    """Convert a CSV or Parquet source to a verified Parquet artifact."""
-
-    _validate_tabular_source(source, source_format)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    connection = duckdb.connect()
-    try:
-        relation = _tabular_relation(connection, source, source_format)
-        columns = list(relation.columns)
-        _validate_column_names(columns)
-        row = relation.aggregate("count(*) AS row_count").fetchone()
-        relation.write_parquet(str(destination), compression="zstd")
-        return EngineResult(
-            row_count=int(row[0]) if row is not None else 0,
-            schema_fields=columns,
-        )
-    except duckdb.Error as exc:
-        raise DataEngineFailure("tabular source could not be transformed") from exc
-    finally:
-        connection.close()
-
-
-def _tabular_relation(
-    connection: duckdb.DuckDBPyConnection,
-    source: Path,
-    source_format: ImportFormat,
-) -> duckdb.DuckDBPyRelation:
-    """Open one tabular source through DuckDB's typed readers."""
-
-    if source_format is ImportFormat.CSV:
-        _validate_csv_header(source)
-        return connection.read_csv(str(source), header=True, auto_detect=True)
-    if source_format is ImportFormat.PARQUET:
-        return connection.read_parquet(str(source))
-    raise DataEngineFailure(f"unsupported tabular format: {source_format.value}")
-
-
-def _validate_tabular_source(source: Path, source_format: ImportFormat) -> None:
-    """Apply regular-file, size, and format-specific source checks."""
-
-    if not source.is_file() or source.is_symlink():
-        raise DataEngineFailure("tabular source must be a regular file")
-    if source.stat().st_size > MAX_SOURCE_BYTES:
-        raise DataEngineFailure("tabular source exceeds 64 MiB")
-    if source_format is ImportFormat.PARQUET and not _has_parquet_magic(source):
-        raise DataEngineFailure("Parquet source has invalid magic bytes")
-
-
-def _validate_csv_header(source: Path) -> None:
-    """Reject blank, duplicate, or ragged CSV columns before DuckDB reads them."""
-
-    try:
-        with source.open("r", encoding="utf-8-sig", newline="") as stream:
-            rows = csv.reader(stream)
-            header = next(rows, None)
-            if (
-                not header
-                or any(not column for column in header)
-                or len(set(header)) != len(header)
-            ):
-                raise DataEngineFailure("CSV source must contain unique non-empty column names")
-            for row_index, row in enumerate(rows, start=2):
-                if len(row) != len(header):
-                    raise DataEngineFailure(
-                        f"CSV row {row_index} contains unknown or missing columns"
-                    )
-    except (OSError, UnicodeError, csv.Error) as exc:
-        raise DataEngineFailure("CSV source header is invalid") from exc
-
-
-def _validate_column_names(columns: list[str]) -> None:
-    """Reject schemas DuckDB or the Product contract cannot represent strictly."""
-
-    if (
-        not columns
-        or any(not isinstance(column, str) or not column for column in columns)
-        or len(set(columns)) != len(columns)
-    ):
-        raise DataEngineFailure("tabular source must contain unique non-empty columns")
-
-
 def _validate_inspection_schema(rows: list[dict[str, Any]], detected_fields: list[str]) -> None:
     """Reject owner projections containing columns outside their declared schema."""
 
@@ -609,32 +466,6 @@ def _validate_inspection_schema(rows: list[dict[str, Any]], detected_fields: lis
             raise DataEngineFailure(
                 f"Plugin row {row_index} contains unknown columns: {sorted(unknown)}"
             )
-
-
-def _json_native(value: Any) -> Any:
-    """Project DuckDB values onto JSON-native values for the Plugin bridge."""
-
-    if value is None or isinstance(value, bool | int | float | str):
-        return value
-    if isinstance(value, datetime.datetime | datetime.date | datetime.time):
-        return value.isoformat()
-    if isinstance(value, decimal.Decimal):
-        return str(value)
-    if isinstance(value, bytes | bytearray):
-        return bytes(value).decode("utf-8", "replace")
-    if isinstance(value, dict):
-        return {str(key): _json_native(item) for key, item in value.items()}
-    if isinstance(value, list | tuple):
-        return [_json_native(item) for item in value]
-    return str(value)
-
-
-def _canonical_json(value: Any) -> bytes:
-    """Encode bridge rows deterministically."""
-
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-        "utf-8"
-    )
 
 
 __all__ = [

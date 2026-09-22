@@ -10,15 +10,12 @@
 
 from __future__ import annotations
 
-import csv
 import hashlib
 import json
 import shutil
 from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID, uuid4
-
-import duckdb
 
 from cyrene_catalyst.artifacts import LocalArtifactPlane
 from cyrene_catalyst.domain import (
@@ -51,7 +48,6 @@ from cyrene_catalyst.engine import (
     PreparationOutput,
     SourceInspection,
     _has_parquet_magic,
-    _json_native,
 )
 from cyrene_catalyst.errors import CatalystError, DataEngineFailure
 from cyrene_catalyst.store import CatalystStore
@@ -59,11 +55,12 @@ from cyrene_catalyst.store import CatalystStore
 PREPARATION_ENGINE_BINDING_ID = "catalyst-prep-v1"
 MAX_IMPORT_BYTES = 64 * 1024 * 1024
 MAX_REPORT_ERRORS = 100
-_ERROR_EXPORT_FIELDS = ["rowIndex", "reasonCode", "message", "field", "excerpt"]
-_TABULAR_EXPORTS: tuple[tuple[str, Literal["text/csv", "application/vnd.apache.parquet"]], ...] = (
-    ("csv", "text/csv"),
-    ("parquet", "application/vnd.apache.parquet"),
-)
+_ExportMediaType = Literal["application/jsonl", "text/csv", "application/vnd.apache.parquet"]
+_EXPORT_MEDIA_TYPES: dict[str, _ExportMediaType] = {
+    "jsonl": "application/jsonl",
+    "csv": "text/csv",
+    "parquet": "application/vnd.apache.parquet",
+}
 
 
 def request_hash(request: CreateDatasetRequest | CreateDatasetVersionRequest) -> str:
@@ -159,128 +156,27 @@ def _validate_samples(output: PreparationOutput, schema_fields: list[str]) -> No
         _validate_sample_content(sample.content, schema_fields, f"sample {sample.index}")
 
 
-def _csv_value(value: Any) -> str:
-    """Serialize nested export values without Python repr syntax."""
+def _read_jsonl_preview(path: Path, *, limit: int, offset: int) -> tuple[int, list[dict[str, Any]]]:
+    """Read a bounded page while counting a normalized JSONL export."""
 
-    if value is None:
-        return ""
-    if isinstance(value, dict | list):
-        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-    return str(value)
-
-
-def _quote_sql_identifier(value: str) -> str:
-    """Quote a validated column name for a generated DuckDB relation."""
-
-    return '"' + value.replace('"', '""') + '"'
-
-
-def _write_csv_export(path: Path, rows: list[dict[str, Any]], fields: list[str]) -> None:
-    """Write a schema-shaped UTF-8 CSV export."""
-
-    with path.open("w", encoding="utf-8", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=fields, extrasaction="raise")
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({field: _csv_value(row.get(field)) for field in fields})
-
-
-def _write_parquet_export(path: Path, rows: list[dict[str, Any]], fields: list[str]) -> None:
-    """Write a schema-shaped Parquet export through DuckDB."""
-
-    jsonl_path = path.with_name(path.name + ".jsonl")
-    normalized_rows = [{field: row.get(field) for field in fields} for row in rows]
-    jsonl_path.write_bytes(
-        b"".join(
-            json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-                "utf-8"
-            )
-            + b"\n"
-            for row in normalized_rows
-        )
-    )
-    connection = duckdb.connect()
+    selected: list[dict[str, Any]] = []
+    total = 0
     try:
-        if normalized_rows:
-            relation = connection.read_json(str(jsonl_path), format="newline_delimited")
-        else:
-            definitions = ", ".join(
-                f"CAST(NULL AS VARCHAR) AS {_quote_sql_identifier(field)}" for field in fields
-            )
-            connection.execute(f"CREATE TABLE export AS SELECT {definitions} WHERE FALSE")
-            relation = connection.table("export")
-        relation.write_parquet(str(path), compression="zstd")
-    except duckdb.Error as exc:
-        raise DataEngineFailure("generated Parquet export could not be written") from exc
-    finally:
-        connection.close()
-        jsonl_path.unlink(missing_ok=True)
-
-
-def _apply_mapping_to_row(
-    raw: dict[str, Any], mapping: MappingConfig | dict[str, Any] | None
-) -> dict[str, Any]:
-    """Project raw row fields into mapped training shape according to mapping config."""
-    if mapping is None:
-        mapped: dict[str, Any] = {}
-        for key in ("instruction", "input", "output", "messages", "prompt", "response"):
-            if key in raw and raw[key] is not None:
-                mapped[key] = raw[key]
-        return mapped if mapped else dict(raw)
-
-    if isinstance(mapping, dict):
-        mapping = MappingConfig.model_validate(mapping)
-
-    mapped = {}
-    if mapping.mode == "instruction":
-        if mapping.instruction:
-            if mapping.instruction.field and mapping.instruction.field in raw:
-                mapped["instruction"] = raw[mapping.instruction.field]
-            elif mapping.instruction.literal is not None:
-                mapped["instruction"] = mapping.instruction.literal
-        elif "instruction" in raw:
-            mapped["instruction"] = raw["instruction"]
-
-        if mapping.input:
-            if mapping.input.field and mapping.input.field in raw:
-                mapped["input"] = raw[mapping.input.field]
-            elif mapping.input.literal is not None:
-                mapped["input"] = mapping.input.literal
-        elif "input" in raw:
-            mapped["input"] = raw["input"]
-
-        if mapping.output:
-            if mapping.output.field and mapping.output.field in raw:
-                mapped["output"] = raw[mapping.output.field]
-            elif mapping.output.literal is not None:
-                mapped["output"] = mapping.output.literal
-        elif "output" in raw:
-            mapped["output"] = raw["output"]
-    elif mapping.mode == "conversation":
-        if "messages" in raw:
-            mapped["messages"] = raw["messages"]
-        else:
-            val_f = mapping.conversation_value_field or "content"
-            from_f = mapping.conversation_from_field or "role"
-            if val_f in raw and from_f in raw:
-                mapped["messages"] = [{"role": raw[from_f], "content": raw[val_f]}]
-            elif "prompt" in raw and "response" in raw:
-                mapped["messages"] = [
-                    {"role": "user", "content": raw["prompt"]},
-                    {"role": "assistant", "content": raw["response"]},
-                ]
-            else:
-                for key in ("instruction", "output", "messages"):
-                    if key in raw:
-                        mapped[key] = raw[key]
-
-    if not mapped:
-        for key in ("instruction", "input", "output", "messages"):
-            if key in raw:
-                mapped[key] = raw[key]
-    if not mapped:
-        mapped = dict(raw)
-    return mapped
+        with path.open("r", encoding="utf-8") as stream:
+            for line_number, line in enumerate(stream, start=1):
+                if not line.strip():
+                    raise DataEngineFailure(
+                        f"published JSONL contains a blank row at line {line_number}"
+                    )
+                row = json.loads(line)
+                if not isinstance(row, dict):
+                    raise DataEngineFailure(f"published JSONL row {line_number} is not an object")
+                if offset <= total < offset + limit:
+                    selected.append(row)
+                total += 1
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise DataEngineFailure("published JSONL artifact is unreadable") from exc
+    return total, selected
 
 
 class CatalystService:
@@ -463,95 +359,45 @@ class CatalystService:
                 status=503,
             )
 
-        parquet_path: Path | None = None
-        mapping: dict[str, Any] | None = None
-
-        if _has_parquet_magic(output_path) or output_path.suffix.casefold() in {".parquet", ".pq"}:
-            parquet_path = output_path
-        else:
-            try:
+        try:
+            if _has_parquet_magic(output_path):
+                inspection = self._inspect_source(output_path, ImportFormat.PARQUET)
+                total_rows = inspection.row_count
+                rows = inspection.rows[offset : offset + limit]
+            else:
                 manifest = json.loads(output_path.read_text(encoding="utf-8"))
-            except Exception as exc:
-                raise CatalystError(
-                    code="CATALYST_ARTIFACT_UNAVAILABLE",
-                    title="Artifact unavailable",
-                    detail=f"Output artifact is neither Parquet nor valid JSON manifest: {exc}",
-                    status=503,
-                ) from exc
-
-            mapping = manifest.get("mapping")
-            files = manifest.get("files", {})
-            target_file = files.get("train.parquet")
-            if not target_file:
-                for fname, fref in files.items():
-                    if fname.endswith(".parquet"):
-                        target_file = fref
-                        break
-            if target_file:
-                try:
-                    clean_target = dict(target_file)
-                    if "sizeBytes" in clean_target:
-                        clean_target["size_bytes"] = clean_target.pop("sizeBytes")
-                    if "manifestDigest" in clean_target:
-                        clean_target["manifest_digest"] = clean_target.pop("manifestDigest")
-                    ref = ArtifactRef.model_validate(clean_target)
-                    parquet_path = self.artifacts.resolve(ref)
-                except Exception as exc:
-                    raise CatalystError(
-                        code="CATALYST_ARTIFACT_UNAVAILABLE",
-                        title="Artifact unavailable",
-                        detail=(
-                            f"Parquet artifact reference invalid or could not be resolved: {exc}"
-                        ),
-                        status=503,
-                    ) from exc
-
-        if parquet_path is None or not parquet_path.exists():
+                if not isinstance(manifest, dict) or not isinstance(manifest.get("files"), dict):
+                    raise DataEngineFailure("output artifact is not a valid dataset manifest")
+                files = manifest["files"]
+                target = files.get("train") or files.get("train.jsonl")
+                if target is not None:
+                    reference = ArtifactRef.model_validate(target)
+                    target_path = self.artifacts.resolve(reference)
+                    total_rows, rows = _read_jsonl_preview(target_path, limit=limit, offset=offset)
+                else:
+                    parquet_target = files.get("train.parquet")
+                    if parquet_target is None:
+                        raise DataEngineFailure("manifest has no training preview artifact")
+                    reference = ArtifactRef.model_validate(parquet_target)
+                    target_path = self.artifacts.resolve(reference)
+                    inspection = self._inspect_source(target_path, ImportFormat.PARQUET)
+                    total_rows = inspection.row_count
+                    rows = inspection.rows[offset : offset + limit]
+        except Exception as exc:
             raise CatalystError(
                 code="CATALYST_ARTIFACT_UNAVAILABLE",
                 title="Artifact unavailable",
-                detail="No readable Parquet artifact found for this version.",
-                status=503,
-            )
-
-        if mapping is None:
-            for prep in self.store.list_preparations(version.dataset_id):
-                if prep.published_version_id == version.id and prep.mapping is not None:
-                    mapping = prep.mapping.model_dump(by_alias=True, exclude_none=True)
-                    break
-
-        connection = duckdb.connect()
-        try:
-            count_res = connection.execute(
-                "SELECT count(*) FROM read_parquet(?)", [str(parquet_path)]
-            ).fetchone()
-            total_rows = int(count_res[0]) if count_res is not None else 0
-
-            relation = connection.execute(
-                "SELECT * FROM read_parquet(?) LIMIT ? OFFSET ?",
-                [str(parquet_path), limit, offset],
-            )
-            columns = [desc[0] for desc in relation.description]
-            fetched = relation.fetchall()
-        except duckdb.Error as exc:
-            raise CatalystError(
-                code="CATALYST_ARTIFACT_UNAVAILABLE",
-                title="Parquet artifact unreadable",
-                detail=f"DuckDB failed to read Parquet artifact: {exc}",
+                detail=f"Published preview artifact is unreadable: {exc}",
                 status=503,
             ) from exc
-        finally:
-            connection.close()
 
         preview_rows: list[PreviewRow] = []
-        for i, row_tuple in enumerate(fetched):
-            raw_row = {col: _json_native(val) for col, val in zip(columns, row_tuple, strict=True)}
-            mapped_row = _apply_mapping_to_row(raw_row, mapping)
+        for index, row in enumerate(rows, start=offset):
             preview_rows.append(
                 PreviewRow(
-                    index=offset + i,
-                    mapped=mapped_row,
-                    raw=raw_row,
+                    index=index,
+                    mapped=dict(row),
+                    raw=dict(row),
                 )
             )
 
@@ -832,77 +678,39 @@ class CatalystService:
         exports: list[ExportFile] = []
         lineage: list[LineageEdge] = []
         file_refs: dict[str, Any] = {}
-        export_bundles: list[tuple[str, Literal["application/jsonl"]]] = [
-            ("train.jsonl", "application/jsonl"),
-            ("val.jsonl", "application/jsonl"),
-            ("errors.jsonl", "application/jsonl"),
-        ]
         expected_rows = {
-            "train.jsonl": train_rows,
-            "val.jsonl": val_rows,
-            "errors.jsonl": error_rows,
+            "train": train_rows,
+            "val": val_rows,
+            "errors": error_rows,
         }
-        for file_name, jsonl_media_type in export_bundles:
-            path = staging / file_name
-            receipt = output.files.get(file_name)
-            if not isinstance(receipt, dict):
-                raise DataEngineFailure(f"dataset preparation Plugin omitted {file_name}")
-            row_count = self._verify_plugin_export(
-                path,
-                file_name,
-                receipt,
-                schema_fields=None if file_name == "errors.jsonl" else schema_fields,
-                expected_count=len(expected_rows[file_name]),
-            )
-            if file_name == "errors.jsonl":
-                path.write_bytes(
-                    b"".join(
-                        error.model_dump_json(by_alias=True).encode("utf-8") + b"\n"
-                        for error in output.errors
-                    )
-                )
-                row_count = len(output.errors)
-            reference = self.artifacts.publish(path, "dataset")
-            exports.append(
-                ExportFile(
-                    name=file_name,
-                    artifact=reference,
-                    row_count=row_count,
-                    media_type=jsonl_media_type,
-                )
-            )
-            file_refs[file_name.removesuffix(".jsonl")] = reference.model_dump(
-                by_alias=True, exclude_none=True
-            )
-            lineage.append(
-                LineageEdge(from_digest=preparation.source.digest, to_digest=reference.digest)
-            )
-
-        tabular_rows = {"train": train_rows, "val": val_rows, "errors": error_rows}
-        tabular_fields = {
-            "train": schema_fields,
-            "val": schema_fields,
-            "errors": _ERROR_EXPORT_FIELDS,
-        }
-        for suffix, tabular_media_type in _TABULAR_EXPORTS:
-            for bundle_name, rows in tabular_rows.items():
+        for bundle_name, rows in expected_rows.items():
+            for suffix, media_type in _EXPORT_MEDIA_TYPES.items():
                 file_name = f"{bundle_name}.{suffix}"
                 path = staging / file_name
-                fields = tabular_fields[bundle_name]
-                if suffix == "csv":
-                    _write_csv_export(path, rows, fields)
-                else:
-                    _write_parquet_export(path, rows, fields)
+                receipt = output.files.get(file_name)
+                if not isinstance(receipt, dict):
+                    raise DataEngineFailure(f"dataset preparation Plugin omitted {file_name}")
+                row_count = self._verify_plugin_export(
+                    path,
+                    file_name,
+                    receipt,
+                    schema_fields=(
+                        schema_fields if suffix == "jsonl" and bundle_name != "errors" else None
+                    ),
+                    expected_count=len(rows),
+                    expected_rows=rows if suffix == "jsonl" else None,
+                )
                 reference = self.artifacts.publish(path, "dataset")
                 exports.append(
                     ExportFile(
                         name=file_name,
                         artifact=reference,
-                        row_count=len(rows),
-                        media_type=tabular_media_type,
+                        row_count=row_count,
+                        media_type=media_type,
                     )
                 )
-                file_refs[file_name] = reference.model_dump(by_alias=True, exclude_none=True)
+                manifest_key = bundle_name if suffix == "jsonl" else file_name
+                file_refs[manifest_key] = reference.model_dump(by_alias=True, exclude_none=True)
                 lineage.append(
                     LineageEdge(from_digest=preparation.source.digest, to_digest=reference.digest)
                 )
@@ -999,6 +807,7 @@ class CatalystService:
         *,
         schema_fields: list[str] | None = None,
         expected_count: int | None = None,
+        expected_rows: list[dict[str, Any]] | None = None,
     ) -> int:
         """Verify an owner-written export before projecting it into Product storage."""
 
@@ -1017,15 +826,18 @@ class CatalystService:
             raise DataEngineFailure(f"Plugin export {file_name} failed digest verification")
         if expected_count is not None and row_count != expected_count:
             raise DataEngineFailure(f"Plugin export {file_name} has an invalid row count")
-        if schema_fields is not None:
+        if schema_fields is not None or expected_rows is not None:
             try:
                 rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
             except (OSError, UnicodeError, json.JSONDecodeError) as exc:
                 raise DataEngineFailure(f"Plugin export {file_name} is not valid JSONL") from exc
             if len(rows) != row_count or not all(isinstance(row, dict) for row in rows):
                 raise DataEngineFailure(f"Plugin export {file_name} has an invalid schema")
-            for index, row in enumerate(rows, start=1):
-                _validate_sample_content(row, schema_fields, f"{file_name} row {index}")
+            if expected_rows is not None and rows != expected_rows:
+                raise DataEngineFailure(f"Plugin export {file_name} does not match its result")
+            if schema_fields is not None:
+                for index, row in enumerate(rows, start=1):
+                    _validate_sample_content(row, schema_fields, f"{file_name} row {index}")
         return row_count
 
     def resolve_export(self, preparation_id: UUID, file_name: str) -> ExportFile:
