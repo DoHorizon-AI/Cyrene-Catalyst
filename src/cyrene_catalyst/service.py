@@ -327,6 +327,15 @@ class CatalystService:
             )
         return version
 
+    def list_versions(self, dataset_id: UUID) -> list[DatasetVersion]:
+        """List the DatasetVersions of one Dataset, newest first.
+
+        Exposed so console UIs can offer a version picker instead of requiring a
+        UUID to be pasted by hand.
+        """
+
+        return self.store.list_versions(dataset_id)
+
     def preview_version(
         self, version_id: UUID, *, limit: int = 10, offset: int = 0
     ) -> DatasetPreview:

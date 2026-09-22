@@ -157,6 +157,16 @@ class CatalystStore:
             ).fetchone()
         return DatasetVersion.model_validate_json(row["document"]) if row else None
 
+    def list_versions(self, dataset_id: UUID) -> list[DatasetVersion]:
+        """List DatasetVersions newest-first. | 列出 Dataset 的版本（新到旧）。"""
+
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT document FROM dataset_versions WHERE dataset_id = ? ORDER BY version DESC",
+                (str(dataset_id),),
+            ).fetchall()
+        return [DatasetVersion.model_validate_json(row["document"]) for row in rows]
+
     def resolve_idempotency(self, scope: str, key: str | None, request_hash: str) -> str | None:
         """Return a replayed resource id or reject conflicting key reuse. | 解析幂等重放。"""
 

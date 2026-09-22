@@ -284,6 +284,16 @@ def create_app(
         return service.list_datasets()
 
     @app.get(
+        "/api/v1/datasets/{datasetId}/versions",
+        response_model=list[DatasetVersion],
+        response_model_exclude_none=True,
+    )
+    def list_versions(
+        dataset_id: Annotated[UUID, ApiPath(alias="datasetId")],
+    ) -> list[DatasetVersion]:
+        return service.list_versions(dataset_id)
+
+    @app.get(
         "/api/v1/datasets/{datasetId}/preparations",
         response_model=list[Preparation],
         response_model_exclude_none=True,
