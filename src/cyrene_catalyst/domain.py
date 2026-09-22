@@ -173,7 +173,6 @@ class ProblemDetails(ContractModel):
     recovery_action: str | None = None
 
 
-
 class EngineResult(ContractModel):
     """Data-engine output before Product publication. | 产品发布前的数据引擎输出。"""
 

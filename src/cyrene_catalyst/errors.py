@@ -117,4 +117,3 @@ def map_catalyst_error(raw_code: str) -> dict[str, str]:
         "cause_kind": "unknown",
         "recovery_action": "query_state_first",
     }
-

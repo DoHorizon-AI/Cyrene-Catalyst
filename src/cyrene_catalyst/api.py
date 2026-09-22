@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated, Literal
@@ -39,15 +38,15 @@ from cyrene_catalyst.domain import (
 )
 from cyrene_catalyst.engine import DataPreparationPort, data_preparation_from_environment
 from cyrene_catalyst.errors import CatalystError, DataEngineFailure, map_catalyst_error
-from cyrene_catalyst.logging import (
-    emit_diagnostic_error,
-    parse_w3c_traceparent,
-    sanitize_request_id,
-)
 from cyrene_catalyst.lifecycle import (
     FeedbackImportRequest,
     HandoffReceipt,
     LifecycleActions,
+)
+from cyrene_catalyst.logging import (
+    emit_diagnostic_error,
+    parse_w3c_traceparent,
+    sanitize_request_id,
 )
 from cyrene_catalyst.service import CatalystService
 from cyrene_catalyst.store import CatalystStore

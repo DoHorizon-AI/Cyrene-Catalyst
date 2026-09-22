@@ -11,13 +11,11 @@ import sys
 from pathlib import Path
 from uuid import uuid4
 
-import pytest
 from fastapi.testclient import TestClient
 
 from cyrene_catalyst.api import create_app
 from cyrene_catalyst.errors import (
     CATALYST_ERROR_MAPPINGS,
-    CatalystError,
     map_catalyst_error,
 )
 from cyrene_catalyst.logging import (
@@ -45,8 +43,8 @@ def test_parse_w3c_traceparent_invalid() -> None:
     assert parse_w3c_traceparent("") is None
     assert parse_w3c_traceparent("invalid-header") is None
     # All-zero trace ID or span ID
-    assert parse_w3c_traceparent(f"00-{'0'*32}-{'1'*16}-01") is None
-    assert parse_w3c_traceparent(f"00-{'1'*32}-{'0'*16}-01") is None
+    assert parse_w3c_traceparent(f"00-{'0' * 32}-{'1' * 16}-01") is None
+    assert parse_w3c_traceparent(f"00-{'1' * 32}-{'0' * 16}-01") is None
 
 
 def test_sanitize_correlation_id() -> None:
