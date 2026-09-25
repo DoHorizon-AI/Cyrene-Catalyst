@@ -101,7 +101,7 @@ def _filename_format(filename: str, content_type: str | None = None) -> ImportFo
 
     中文:根据文件名或请求 media type 返回表格类型提示。
     """
-# 中文:根据文件名或请求媒体类型返回表格格式提示。
+    # 中文:根据文件名或请求媒体类型返回表格格式提示。
 
     suffix = Path(filename).suffix.casefold()
     media_type = (content_type or "").split(";", 1)[0].strip().casefold()
@@ -128,7 +128,7 @@ def _validate_sample_content(content: dict[str, Any], schema_fields: list[str], 
 
     中文:根据 Product 导出 schema 校验一条 Plugin sample。
     """
-# 中文:按 Product 导出模式校验一个 Plugin 样本。
+    # 中文:按 Product 导出模式校验一个 Plugin 样本。
 
     allowed = set(schema_fields)
     unknown = set(content) - allowed
@@ -162,7 +162,7 @@ def _validate_samples(output: PreparationOutput, schema_fields: list[str]) -> No
 
     中文:在发布任何导出内容前校验全部规范化样本。
     """
-# 中文:在发布任何导出前先校验所有规范化样本。
+    # 中文:在发布任何导出前先校验所有规范化样本。
 
     for sample in output.samples:
         _validate_sample_content(sample.content, schema_fields, f"sample {sample.index}")
@@ -173,7 +173,7 @@ def _read_jsonl_preview(path: Path, *, limit: int, offset: int) -> tuple[int, li
 
     中文:读取有界页面,同时统计规范化 JSONL 导出内容。
     """
-# 中文:读取一个有界页面,同时统计规范化 JSONL 导出记录数。
+    # 中文:读取一个有界页面,同时统计规范化 JSONL 导出记录数。
 
     selected: list[dict[str, Any]] = []
     total = 0
@@ -352,8 +352,8 @@ class CatalystService:
         中文：按时间从新到旧列出某个 Dataset 的 DatasetVersion。
         此接口可供 console UI 提供版本选择器,免得用户手动粘贴 UUID。
         """
-    # 中文:按最新优先顺序列出一个 Dataset 的 DatasetVersion。此操作供控制台 UI 提供版本选择器,
-    # 避免要求用户手动粘贴 UUID。
+        # 中文:按最新优先顺序列出一个 Dataset 的 DatasetVersion。此操作供控制台 UI 提供版本选择器,
+        # 避免要求用户手动粘贴 UUID。
 
         return self.store.list_versions(dataset_id)
 
@@ -845,7 +845,7 @@ class CatalystService:
 
         中文:将 owner 编写的导出投影到 Product 存储前先进行校验。
         """
-    # 中文:在投影到 Product 存储之前,验证 owner 写入的导出。
+        # 中文:在投影到 Product 存储之前,验证 owner 写入的导出。
 
         row_count = receipt.get("row_count")
         size = receipt.get("size")
@@ -898,7 +898,7 @@ class CatalystService:
 
         中文:读取 source 时兼容较早的 test-port 实现。
         """
-    # 中文:检查来源,并兼容较旧的测试端口实现。
+        # 中文:检查来源,并兼容较旧的测试端口实现。
 
         if format_hint is None:
             return self.engine.inspect(source)
@@ -923,7 +923,7 @@ class CatalystService:
 
         中文:运行 Plugin,并将失败投影为 Product 错误。
         """
-    # 中文:运行 Plugin 并将失败映射为 Product 错误。
+        # 中文:运行 Plugin 并将失败映射为 Product 错误。
 
         try:
             return self.engine.prepare(

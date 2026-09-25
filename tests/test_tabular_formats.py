@@ -209,7 +209,8 @@ class _UnknownColumnEngine:
 
     中文:构造带有无效规范化 sample schema 的 test-only engine projection。
     """
-# 中文:仅供测试使用的引擎投影,其中包含无效的规范化样本模式。
+
+    # 中文:仅供测试使用的引擎投影,其中包含无效的规范化样本模式。
 
     def inspect(self, source: Path, *, format_hint: ImportFormat | None = None) -> SourceInspection:
         del source, format_hint

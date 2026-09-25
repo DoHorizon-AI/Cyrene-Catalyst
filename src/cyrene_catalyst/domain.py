@@ -357,7 +357,8 @@ class PreviewRow(ContractModel):
 
     中文:数据集版本预览中的一行。
     """
-# 中文:数据集版本预览中的一行。
+
+    # 中文:数据集版本预览中的一行。
 
     index: int = Field(ge=0)
     mapped: dict[str, Any]
@@ -369,7 +370,8 @@ class DatasetPreview(ContractModel):
 
     中文:包含映射结果和原始字段的数据集版本分页预览。
     """
-# 中文:包含映射字段和原始字段的分页数据集版本预览。
+
+    # 中文:包含映射字段和原始字段的分页数据集版本预览。
 
     version_id: UUID
     total_rows: int = Field(ge=0)

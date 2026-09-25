@@ -45,7 +45,8 @@ class SourceInspection:
 
     中文:Product 对 Plugins 所有的 source inspection 结果进行投影。
     """
-# 中文:由 Product 投影的一次 Plugins 所有的来源检查结果。
+
+    # 中文:由 Product 投影的一次 Plugins 所有的来源检查结果。
 
     source_format: ImportFormat
     rows: list[dict[str, Any]]
@@ -59,7 +60,8 @@ class PreparedSample:
 
     中文:Product 对一个规范化 sample 的投影。
     """
-# 中文:一个规范化样本的 Product 投影。
+
+    # 中文:一个规范化样本的 Product 投影。
 
     index: int
     group_key: str
@@ -73,7 +75,8 @@ class PreparationOutput:
 
     中文:Product 对确定性 capability 输出的投影。
     """
-# 中文:确定性能力输出的 Product 投影。
+
+    # 中文:确定性能力输出的 Product 投影。
 
     samples: list[PreparedSample]
     errors: list[SampleError]
@@ -92,13 +95,15 @@ class DataPreparationPort(Protocol):
 
     中文:不包含 capability 实现的 Catalyst 应用端口。
     """
-# 中文:不包含能力实现的 Catalyst 应用端口。
+
+    # 中文:不包含能力实现的 Catalyst 应用端口。
 
     def inspect(self, source: Path, *, format_hint: ImportFormat | None = None) -> SourceInspection:
         """Inspect a staged source through the canonical Plugin owner.
 
         中文:通过 canonical Plugin owner 检查已暂存的 source。
         """
+
     # 中文:通过规范 Plugin owner 检查已暂存来源。
 
     def prepare(
@@ -115,6 +120,7 @@ class DataPreparationPort(Protocol):
 
         中文:通过 canonical Plugin owner 执行映射、规范化与拆分。
         """
+
     # 中文:通过规范 Plugin owner 执行映射/规范化/拆分。
 
     def transform(self, source: Path, destination: Path) -> EngineResult:
@@ -122,6 +128,7 @@ class DataPreparationPort(Protocol):
 
         中文:通过 canonical Plugin owner 转换 source artifact。
         """
+
     # 中文:通过规范 Plugin owner 转换来源制品。
 
 
@@ -130,7 +137,8 @@ class DirectPluginDataPreparationPort:
 
     中文:面向已解析 dataset.preparation.v1 endpoint 的类型化 adapter。
     """
-# 中文:针对一个已解析的 ``dataset.preparation.v1`` 端点的类型化适配器。
+
+    # 中文:针对一个已解析的 ``dataset.preparation.v1`` 端点的类型化适配器。
 
     def __init__(self, client: Any, *, deadline_seconds: float = 60.0) -> None:
         self._client = client
@@ -142,7 +150,7 @@ class DirectPluginDataPreparationPort:
 
         中文:基于不透明 connection reference 创建 Product adapter。
         """
-    # 中文:使用不透明连接引用创建 Product 适配器。
+        # 中文:使用不透明连接引用创建 Product 适配器。
 
         connection_ref = os.environ.get(DATASET_PREPARATION_CONNECTION_ENV, "").strip()
         if not connection_ref:
@@ -164,7 +172,7 @@ class DirectPluginDataPreparationPort:
 
         中文:检查并校验由 Plugin 写入的 row projection。
         """
-    # 中文:检查并校验 Plugin 写入的行投影。
+        # 中文:检查并校验 Plugin 写入的行投影。
 
         source_format_hint = (
             format_hint if format_hint in _TABULAR_FORMATS else _tabular_format(source)
@@ -209,7 +217,7 @@ class DirectPluginDataPreparationPort:
 
         中文:执行数据准备并校验 owner 生成的每个 projection。
         """
-    # 中文:执行 preparation,并校验 owner 生成的每一项投影。
+        # 中文:执行 preparation,并校验 owner 生成的每一项投影。
 
         request: dict[str, Any] = {
             "source_path": str(source.resolve()),
@@ -254,7 +262,7 @@ class DirectPluginDataPreparationPort:
 
         中文:执行 Product transform 并核验生成的字节数据。
         """
-    # 中文:执行 Product 转换并核验生成的字节。
+        # 中文:执行 Product 转换并核验生成的字节。
 
         source_format = _tabular_format(source)
         request = {
@@ -280,7 +288,7 @@ class DirectPluginDataPreparationPort:
 
         中文:调用一个类型化方法,并将响应解码为严格对象。
         """
-    # 中文:调用一个类型化方法并解码严格对象响应。
+        # 中文:调用一个类型化方法并解码严格对象响应。
 
         try:
             from cyrene_plugin_runtime import DirectPayload, DirectPluginError
@@ -316,7 +324,8 @@ class UnavailableDataPreparationPort:
 
     中文:未配置 Plugin binding 时使用 fail-closed Product adapter。
     """
-# 中文:在没有 Plugin binding 时使用的 fail-closed Product 适配器。
+
+    # 中文:在没有 Plugin binding 时使用的 fail-closed Product 适配器。
 
     def __init__(self, reason: str) -> None:
         self._reason = reason
@@ -348,7 +357,7 @@ def data_preparation_from_environment() -> DataPreparationPort:
 
     中文:解析 Direct Plugin adapter,不提供任何本地实现回退。
     """
-# 中文:解析直连 Plugin 适配器,不使用任何本地实现回退。
+    # 中文:解析直连 Plugin 适配器,不使用任何本地实现回退。
 
     try:
         return DirectPluginDataPreparationPort.from_environment()
@@ -478,7 +487,7 @@ def _has_parquet_magic(source: Path) -> bool:
 
     中文:不解析 Parquet,仅检查其起始和结尾的 magic bytes。
     """
-# 中文:不解析 Parquet,只检查其开头和结尾的 magic 字节。
+    # 中文:不解析 Parquet,只检查其开头和结尾的 magic 字节。
 
     try:
         size = source.stat().st_size
@@ -498,7 +507,7 @@ def _looks_like_csv(source: Path) -> bool:
 
     中文:识别基于表头的 CSV artifact,即使其 CAS 路径没有扩展名。
     """
-# 中文:识别基于表头的 CSV 制品,即使其 CAS 路径没有后缀。
+    # 中文:识别基于表头的 CSV 制品,即使其 CAS 路径没有后缀。
 
     try:
         with source.open("r", encoding="utf-8-sig", newline="") as stream:
@@ -523,7 +532,7 @@ def _validate_inspection_schema(rows: list[dict[str, Any]], detected_fields: lis
 
     中文:拒绝包含声明 schema 之外列的 owner projection。
     """
-# 中文:拒绝包含声明模式以外列的 owner 投影。
+    # 中文:拒绝包含声明模式以外列的 owner 投影。
 
     if (
         len(detected_fields) > 500
