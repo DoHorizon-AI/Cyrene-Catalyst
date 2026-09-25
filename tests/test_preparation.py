@@ -115,7 +115,7 @@ def test_end_to_end_publish_and_consumable_export(tmp_path: Path) -> None:
         assert version["rowCount"] == 3
         assert version["schemaFields"] == ["instruction", "output"]
         assert len(version["lineage"]) >= 4  # source -> train/val/errors/manifest
-        # 中文：源数据到训练、验证、错误记录与清单的血缘项
+        # 中文:源数据到训练、验证、错误记录与清单的血缘项
 
         exports = {
             e["name"]: e for e in client.get(f"/api/v1/preparations/{prep['id']}/exports").json()
@@ -135,7 +135,7 @@ def test_end_to_end_publish_and_consumable_export(tmp_path: Path) -> None:
         # Real read proof: DuckDB consumes the exported training JSONL,
         # and the rows satisfy the instruction-mode invariants carried by
         # the Yield-owned contract (instruction/output non-empty strings).
-        # 中文：真实读取验证:DuckDB 读取导出的训练 JSONL,并确认记录满足 Yield 契约中的 instruction
+        # 中文:真实读取验证:DuckDB 读取导出的训练 JSONL,并确认记录满足 Yield 契约中的 instruction
         # 模式约束(instruction/output 均为非空字符串)。
         train_bytes = client.get(f"/api/v1/preparations/{prep['id']}/exports/train.jsonl").content
         train_path = tmp_path / "train.jsonl"

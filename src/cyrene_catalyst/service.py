@@ -352,7 +352,7 @@ class CatalystService:
         中文：按时间从新到旧列出某个 Dataset 的 DatasetVersion。
         此接口可供 console UI 提供版本选择器,免得用户手动粘贴 UUID。
         """
-    # 中文：按最新优先顺序列出一个 Dataset 的 DatasetVersion。此操作供控制台 UI 提供版本选择器,
+    # 中文:按最新优先顺序列出一个 Dataset 的 DatasetVersion。此操作供控制台 UI 提供版本选择器,
     # 避免要求用户手动粘贴 UUID。
 
         return self.store.list_versions(dataset_id)
@@ -681,7 +681,7 @@ class CatalystService:
         self._require_state(preparation, {PreparationState.CONFIRMED}, "publish")
 
         assert preparation.mapping is not None  # state guarantees configuration
-        # 中文：该状态保证配置已存在
+        # 中文:该状态保证配置已存在
         assert preparation.normalization is not None
         assert preparation.split is not None
         staging = self.artifacts.stage_dir(f"prep-{preparation.id}")
@@ -958,7 +958,7 @@ class CatalystService:
         """Re-run the deterministic pipeline for a configured preparation. | 重跑确定性流水线。"""
 
         assert preparation.mapping is not None  # guarded by _require_mapped
-        # 中文：由 _require_mapped 进行保护
+        # 中文:由 _require_mapped 进行保护
         assert preparation.normalization is not None
         return self._prepare_output(
             preparation.source,

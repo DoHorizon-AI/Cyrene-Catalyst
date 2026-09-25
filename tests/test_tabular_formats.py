@@ -7,7 +7,7 @@
 
 中文:验证 CSV/Parquet 导入与导出、MIME 类型及 schema 边界。
 """
-# 中文：文件:tests/test_tabular_formats.py;模块:tests.test_tabular_formats;职责:CSV/Parquet 导入、
+# 中文:文件:tests/test_tabular_formats.py;模块:tests.test_tabular_formats;职责:CSV/Parquet 导入、
 # 导出、MIME 类型与模式边界验证。
 
 from __future__ import annotations
