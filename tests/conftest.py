@@ -3,9 +3,12 @@
 The fixture imports the owner package installed from Cyrene-Plugins-Official.
 It deliberately does not implement dataset preparation inside this Product.
 
-中文:用于 Catalyst 集成测试的 Direct Plugin endpoint。fixture 会导入从 Cyrene-Plugins-Official 安装的 owner package;它不会在这个 Product 内实现 dataset preparation。
+中文：用于 Catalyst 集成测试的 Direct Plugin endpoint。
+fixture 会导入从 Cyrene-Plugins-Official 安装的 owner package;
+它不会在这个 Product 内实现 dataset preparation。
 """
-# 中文:Catalyst 集成测试使用的直连 Plugin 端点。此夹具导入从 Cyrene-Plugins-Official 安装的 owner 包;它刻意不在此 Product 中实现 dataset preparation。
+# 中文：Catalyst 集成测试使用的直连 Plugin 端点。此夹具导入从 Cyrene-Plugins-Official 安装的 owner
+# 包;它刻意不在此 Product 中实现 dataset preparation。
 
 from __future__ import annotations
 

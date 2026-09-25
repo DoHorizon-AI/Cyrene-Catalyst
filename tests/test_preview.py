@@ -197,7 +197,8 @@ def test_preview_error_cases(tmp_path: Path) -> None:
         )
         # Because the source file doesn't exist, create_version fails with 422
         # But we can test 503 by deleting the parquet file of a published version
-        # 中文:由于源文件不存在,create_version 会失败并返回 422;但可通过删除已发布版本的 Parquet 文件来验证 503。
+        # 中文：由于源文件不存在,create_version 会失败并返回 422;
+        # 但可通过删除已发布版本的 Parquet 文件来验证 503。
         csv_content = b"instruction,output\nq,a\n"
         version = _publish_csv(client, dataset_id, "temp.csv", csv_content)
         v_id = version["id"]
