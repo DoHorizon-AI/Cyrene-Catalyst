@@ -4,7 +4,10 @@
 │  Module: tests.test_preview                                         │
 │  Role: Dataset version sample preview API test proof.               │
 └─────────────────────────────────────────────────────────────────────┘
+
+中文:数据集版本样本预览 API 的测试验证。
 """
+# 中文:文件:tests/test_preview.py;模块:tests.test_preview;职责:数据集版本样本预览 API 测试证明。
 
 from __future__ import annotations
 
@@ -90,6 +93,7 @@ def test_dataset_version_preview(tmp_path: Path) -> None:
         version_id = version["id"]
 
         # Case 1: Normal pagination
+        # 中文:案例 1:正常分页。
         res = client.get(f"/api/v1/dataset-versions/{version_id}/preview?limit=2&offset=0")
         assert res.status_code == 200, res.text
         data = res.json()
@@ -110,6 +114,7 @@ def test_dataset_version_preview(tmp_path: Path) -> None:
         assert data2["rows"][0]["mapped"]["instruction"] == "inst 3"
 
         # Case 2: Out-of-range offset
+        # 中文:案例 2:offset 超出范围。
         res_oob = client.get(f"/api/v1/dataset-versions/{version_id}/preview?limit=10&offset=500")
         assert res_oob.status_code == 200
         data_oob = res_oob.json()
@@ -117,6 +122,7 @@ def test_dataset_version_preview(tmp_path: Path) -> None:
         assert len(data_oob["rows"]) == 0
 
         # Case 3: Limit bounds
+        # 中文:案例 3:limit 边界。
         res_min = client.get(f"/api/v1/dataset-versions/{version_id}/preview?limit=1")
         assert res_min.status_code == 200
         assert len(res_min.json()["rows"]) == 1
@@ -134,6 +140,7 @@ def test_dataset_version_preview(tmp_path: Path) -> None:
         assert res_neg.status_code == 422
 
         # Case 4: Mapping field coverage (custom column names mapped to instruction/output/input)
+        # 中文:案例 4:Mapping 字段覆盖(将自定义列名映射到 instruction/output/input)。
         csv_custom = (
             b"col_prompt,col_response,col_context\n"
             b"custom prompt 1,custom response 1,custom context 1\n"
@@ -163,14 +170,17 @@ def test_preview_error_cases(tmp_path: Path) -> None:
     client = _client(tmp_path)
     with client:
         # Non-existent version -> 404
+        # 中文:版本不存在 -> 404。
         missing_id = uuid4()
         res_404 = client.get(f"/api/v1/dataset-versions/{missing_id}/preview")
         assert res_404.status_code == 404
         assert res_404.json()["code"] == "CATALYST_VERSION_NOT_FOUND"
 
         # Missing output / unreadable -> 503
+        # 中文:输出缺失或不可读 -> 503。
         dataset_id = _dataset(client)
         # Create version directly pointing to missing artifact
+        # 中文:直接创建指向缺失制品的版本。
         fake_digest = "sha256:" + "0" * 64
         fake_uri = "artifact://sha256/" + "0" * 64
         client.post(
@@ -187,6 +197,8 @@ def test_preview_error_cases(tmp_path: Path) -> None:
         )
         # Because the source file doesn't exist, create_version fails with 422
         # But we can test 503 by deleting the parquet file of a published version
+        # 中文:由于源文件不存在,create_version 会失败并返回 422;
+        # 但可通过删除已发布版本的 Parquet 文件来验证 503。
         csv_content = b"instruction,output\nq,a\n"
         version = _publish_csv(client, dataset_id, "temp.csv", csv_content)
         v_id = version["id"]

@@ -26,7 +26,11 @@ from cyrene_catalyst.domain import ArtifactRef
 
 
 def _artifact(path: Path, artifact_root: Path) -> dict[str, Any]:
-    """Publish through the shared Platform artifact plane the Product uses."""
+    """Publish through the shared Platform artifact plane the Product uses.
+
+    中文:通过 Product 共用的 Platform artifact plane 发布。
+    """
+    # 中文:通过 Product 使用的共享 Platform 制品平面发布。
 
     reference = LocalArtifactPlane(artifact_root).publish(path, "dataset")
     return reference.model_dump(exclude_none=True)

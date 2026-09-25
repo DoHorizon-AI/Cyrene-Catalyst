@@ -33,6 +33,7 @@ def _client(tmp_path: Path) -> TestClient:
 
 
 # ── End-to-end publish and Yield-compatible export proof ───────────────
+# 中文:端到端发布和 Yield 兼容导出的验证。
 
 
 def _make_dataset(client: TestClient, name: str = "prep-dataset") -> str:
@@ -114,6 +115,7 @@ def test_end_to_end_publish_and_consumable_export(tmp_path: Path) -> None:
         assert version["rowCount"] == 3
         assert version["schemaFields"] == ["instruction", "output"]
         assert len(version["lineage"]) >= 4  # source -> train/val/errors/manifest
+        # 中文:源数据到训练、验证、错误记录与清单的血缘项
 
         exports = {
             e["name"]: e for e in client.get(f"/api/v1/preparations/{prep['id']}/exports").json()
@@ -121,6 +123,7 @@ def test_end_to_end_publish_and_consumable_export(tmp_path: Path) -> None:
         assert {"train.jsonl", "val.jsonl", "errors.jsonl", "manifest.json"} <= set(exports)
 
         # Idempotent replay with the same key returns the same version and digest.
+        # 中文:使用相同密钥幂等重放时,返回相同版本和摘要。
         replay = client.post(
             f"/api/v1/preparations/{prep['id']}/publish",
             headers={"Idempotency-Key": "demo-publish"},
@@ -132,6 +135,8 @@ def test_end_to_end_publish_and_consumable_export(tmp_path: Path) -> None:
         # Real read proof: DuckDB consumes the exported training JSONL,
         # and the rows satisfy the instruction-mode invariants carried by
         # the Yield-owned contract (instruction/output non-empty strings).
+        # 中文:真实读取验证:DuckDB 读取导出的训练 JSONL,并确认记录满足 Yield 契约中的 instruction
+        # 模式约束(instruction/output 均为非空字符串)。
         train_bytes = client.get(f"/api/v1/preparations/{prep['id']}/exports/train.jsonl").content
         train_path = tmp_path / "train.jsonl"
         train_path.write_bytes(train_bytes)
@@ -147,12 +152,14 @@ def test_end_to_end_publish_and_consumable_export(tmp_path: Path) -> None:
             assert isinstance(output, str) and output.strip()
 
         # Error samples are surfaced with reasons, never silently dropped.
+        # 中文:错误样本会附带原因显式呈现,绝不会被静默丢弃。
         errors_text = client.get(f"/api/v1/preparations/{prep['id']}/exports/errors.jsonl").text
         error_rows = [json.loads(line) for line in errors_text.splitlines() if line]
         assert error_rows
         assert all(r["reasonCode"] == "EMPTY_FIELD" for r in error_rows)
 
         # Manifest preserves source, configs, and per-sample lineage.
+        # 中文:Manifest 会保留来源、配置和每个样本的沿袭信息。
         manifest = json.loads(
             client.get(f"/api/v1/preparations/{prep['id']}/exports/manifest.json").text
         )
@@ -163,6 +170,7 @@ def test_end_to_end_publish_and_consumable_export(tmp_path: Path) -> None:
         assert manifest["files"]["train"]["digest"] == exports["train.jsonl"]["artifact"]["digest"]
 
         # Yield draft honestly reports NOT_CONNECTED.
+        # 中文:Yield 草稿如实报告 NOT_CONNECTED。
         yield_draft = client.post(f"/api/v1/preparations/{prep['id']}/yield-draft")
         assert yield_draft.status_code == 503
         assert yield_draft.json()["code"] == "CATALYST_YIELD_NOT_CONNECTED"
@@ -176,8 +184,10 @@ def test_state_machine_rejects_invalid_transitions(tmp_path: Path) -> None:
         dataset_id = _make_dataset(client)
         prep = _upload(client, dataset_id, "s.jsonl", b'{"q":"a","a":"b"}\n')
         # confirm before mapping/split -> 409
+        # 中文:在 mapping/split 之前执行 confirm -> 409。
         assert client.post(f"/api/v1/preparations/{prep['id']}/confirm").status_code == 409
         # split before mapping -> 409
+        # 中文:在 mapping 之前执行 split -> 409。
         assert (
             client.patch(
                 f"/api/v1/preparations/{prep['id']}/split",
@@ -186,6 +196,7 @@ def test_state_machine_rejects_invalid_transitions(tmp_path: Path) -> None:
             == 409
         )
         # mapping referencing unknown field -> 422
+        # 中文:mapping 引用了未知字段 -> 422。
         bad = client.patch(
             f"/api/v1/preparations/{prep['id']}/mapping",
             json={

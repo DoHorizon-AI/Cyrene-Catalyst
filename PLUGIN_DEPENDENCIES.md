@@ -20,3 +20,11 @@ independent export assertions.
 锁定的 Plugin 负责读取 JSON/JSONL/text/CSV/Parquet，并写出经验证的
 JSONL/CSV/Parquet 导出包。Catalyst 只验证结果与文件回执、发布不可变 ArtifactRef；
 Product 运行时代码不再导入 DuckDB。DuckDB 仅作为开发依赖用于独立验证导出物。
+---
+<!-- Chinese Translation / 中文翻译 -->
+
+## 能力依赖边界
+
+Catalyst 在检查、准备和转换操作中需要 Plugins 所有的 `dataset.preparation.v1` 能力。Platform 可以安装/激活该包并返回不透明的 `connection_ref`；随后 Catalyst 使用 Plugins 所有的 `cyrene-plugin-runtime` SDK 直接调用它。
+
+Product 拥有 Dataset/Preparation 状态、策略、沿袭、发布和交接。Plugin 拥有负载契约以及具体的解析、规范化、去重、分组、转换和拆分算法。缺少 binding 时按 fail-closed 处理；不会选择 Product 本地处理实现来替代 preparation provider。

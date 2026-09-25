@@ -4,7 +4,11 @@
 │  Module: tests.test_tabular_formats                                  │
 │  Role: CSV/Parquet import, export, MIME, and schema-boundary proof.   │
 └─────────────────────────────────────────────────────────────────────┘
+
+中文:验证 CSV/Parquet 导入与导出、MIME 类型及 schema 边界。
 """
+# 中文:文件:tests/test_tabular_formats.py;模块:tests.test_tabular_formats;职责:CSV/Parquet 导入、
+# 导出、MIME 类型与模式边界验证。
 
 from __future__ import annotations
 
@@ -201,7 +205,12 @@ def test_csv_media_type_selects_format_without_a_filename(tmp_path: Path) -> Non
 
 
 class _UnknownColumnEngine:
-    """Test-only engine projection with an invalid normalized sample schema."""
+    """Test-only engine projection with an invalid normalized sample schema.
+
+    中文:构造带有无效规范化 sample schema 的 test-only engine projection。
+    """
+
+    # 中文:仅供测试使用的引擎投影,其中包含无效的规范化样本模式。
 
     def inspect(self, source: Path, *, format_hint: ImportFormat | None = None) -> SourceInspection:
         del source, format_hint

@@ -112,3 +112,76 @@ local tests, manual Azure runs, and source visibility cannot substitute for it.
 公开源码可见性不会授予被排除的第三方数据或未解决依赖的权利。二进制分发还需要
 release SBOM 与完整许可证闭包。Hosted CI 只证明特定提交；本地测试、手动 Azure
 运行与源码可见性不能相互替代。
+---
+<!-- Chinese Translation / 中文翻译 -->
+
+# 仓库生命周期：cyrene-catalyst
+
+本文为 **cyrene-catalyst** 提供自包含的生命周期、边界和权威规范。
+
+## 1. 仓库用途与所有权补充
+
+### 本仓库拥有
+
+- Dataset 和 DatasetVersion 生命周期状态。
+- 数据准备、转换、质量及 Product 沿袭。
+- 向 Yield、Echo 等所属 Product 发起的显式交接请求。
+
+### 本仓库不拥有
+
+- Kernel 执行底座。
+- Platform Artifact Plane 实现或通用 Artifact provider 代码。
+- 能力负载契约、生成的能力 SDK 或能力 TCK。
+- Platform 能力解析、ModelVersion 状态或训练执行。
+
+## 2. 分类与发布单元
+
+- **生命周期类别**：`PUBLIC_PRODUCT`。
+- **源码所有者**：Dialogue & Synthesis Team。
+- **独立构建单元**：是，构建工具为 `uv` / `hatchling`。
+- **包/制品单元**：`cyrene-catalyst` wheel。
+- **可部署单元**：是，本地 Catalyst Product API。
+- **Product 单元**：是，Dataset 生命周期 Product。
+- **用户分发单元**：是，组件发布。
+- **多仓库依赖**：Yield/Echo 的直连交接需要多仓库协作；构建时不依赖 Platform。
+
+## 3. 权威与交付边界
+
+- **CI 权威**：`github`；GitHub Actions 拥有自动源码和契约检查。
+- **发布职责**：`COMPONENT_RELEASE`。
+- **发布权威**：`github_releases`。
+- **部署权威**：`dohorizon_azure`；在本仓库中仅用于手动/内部部署。
+- **分发配置文件**：`dialogue_ext`。
+
+## 4. 公开/私有信任边界与访问矩阵
+
+- **目标仓库访问**：源码和检查公开；普通本地检查不要求私有 token。
+- **当前托管状态**：GitHub 仓库为 public。
+- **依赖边界**：固定版本的 Plugins revision 公开且不可变；其包元数据尚未授予许可证，因此二进制发布仍受阻。
+- **Product 边界**：Catalyst 拥有可替换的本地 Artifact Plane 适配器，只交换 Provider 无关的 `ArtifactRef` 值。Product 负载和引擎调用留在 Catalyst 内，或通过 Product/Plugin 直连交接。
+- **内部/交付维护者**：Azure DevOps 只用于手动部署或私有集成工作，不是自动源码 CI 权威。
+
+## 6. 参与完整 Cyrene 分发
+
+本仓库不会直接向普通终端用户分发独立 release zip。经过验证的组件制品会在官方 **Cyrene Distribution ReleaseLock**（BOM）的 `dialogue_ext` 配置文件中按精确提交和摘要引用。
+
+## 7. 验证与治理链接
+
+- **本地验证**：运行 `uv sync --locked --group dev`，然后运行 `uv run ruff check src tests`、`uv run mypy` 和 `uv run pytest -q`。
+- **规范架构文档**：参见 [`Cyrene-Platform/docs/start-here/00-what-is-cyrene.md`](https://github.com/DoHorizon-AI/Cyrene-Platform/blob/main/docs/start-here/00-what-is-cyrene.md)。
+- **发布拓扑**：参见 [`Cyrene-Platform/docs/release/release-topology.md`](https://github.com/DoHorizon-AI/Cyrene-Platform/blob/main/docs/release/release-topology.md)。
+- **CI 信任模型**：参见 [`Cyrene-Platform/docs/governance/ci-trust-model.md`](https://github.com/DoHorizon-AI/Cyrene-Platform/blob/main/docs/governance/ci-trust-model.md)。
+
+## 8. 版本与标签策略
+
+- **版本方案**：`semver`（SemVer）。
+- **版本范围**：`repository`。
+- **标签策略**：`repository`。
+- **规范标签格式**：`v{version}`。
+- **标签不可变性**：已发布标签永久不可变。缺陷发布必须增加 patch 版本。
+
+## 9. 分支模型与晋升
+
+- **规范分支（`main`）**：clean-root 默认分支，也是日常开发与 Pull Request 的基线；必须保持绿色。
+- **工作分支**：功能和修复分支应短期存在，并经评审后合并回 `main`。
+- **发布来源**：官方组件发布和标签严格从 `main` 创建。

@@ -74,3 +74,12 @@ now verified; the remaining unresolved entries are listed in
 公开前，维护者必须确认每个直接依赖和每个非 registry 源都有明确许可证记录，
 Plugins 依赖可匿名访问，并确认生成的 SBOM 与 tag 对应的 `uv.lock` 一致。当前
 未解决条目列于 [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md)。
+---
+<!-- Chinese Translation / 中文翻译 -->
+
+## 权威输入中文对照
+
+- 运行时和开发依赖声明：[`pyproject.toml`](../pyproject.toml)。
+- 已解析的 Python 依赖图及摘要：[`uv.lock`](../uv.lock)。
+- 仓库许可证授权：[`LICENSE`](../LICENSE)。
+- 直接依赖摘要：[`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md)。

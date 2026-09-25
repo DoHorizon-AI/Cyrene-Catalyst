@@ -41,7 +41,12 @@ _TABULAR_FORMATS = {ImportFormat.CSV, ImportFormat.PARQUET}
 
 @dataclass(frozen=True, slots=True)
 class SourceInspection:
-    """Product projection of one Plugins-owned source inspection."""
+    """Product projection of one Plugins-owned source inspection.
+
+    中文:Product 对 Plugins 所有的 source inspection 结果进行投影。
+    """
+
+    # 中文:由 Product 投影的一次 Plugins 所有的来源检查结果。
 
     source_format: ImportFormat
     rows: list[dict[str, Any]]
@@ -51,7 +56,12 @@ class SourceInspection:
 
 @dataclass(frozen=True, slots=True)
 class PreparedSample:
-    """Product projection of one normalized sample."""
+    """Product projection of one normalized sample.
+
+    中文:Product 对一个规范化 sample 的投影。
+    """
+
+    # 中文:一个规范化样本的 Product 投影。
 
     index: int
     group_key: str
@@ -61,7 +71,12 @@ class PreparedSample:
 
 @dataclass(frozen=True, slots=True)
 class PreparationOutput:
-    """Product projection of deterministic capability output."""
+    """Product projection of deterministic capability output.
+
+    中文:Product 对确定性 capability 输出的投影。
+    """
+
+    # 中文:确定性能力输出的 Product 投影。
 
     samples: list[PreparedSample]
     errors: list[SampleError]
@@ -76,10 +91,20 @@ class PreparationOutput:
 
 
 class DataPreparationPort(Protocol):
-    """Catalyst application port with no capability implementation."""
+    """Catalyst application port with no capability implementation.
+
+    中文:不包含 capability 实现的 Catalyst 应用端口。
+    """
+
+    # 中文:不包含能力实现的 Catalyst 应用端口。
 
     def inspect(self, source: Path, *, format_hint: ImportFormat | None = None) -> SourceInspection:
-        """Inspect a staged source through the canonical Plugin owner."""
+        """Inspect a staged source through the canonical Plugin owner.
+
+        中文:通过 canonical Plugin owner 检查已暂存的 source。
+        """
+
+    # 中文:通过规范 Plugin owner 检查已暂存来源。
 
     def prepare(
         self,
@@ -91,14 +116,29 @@ class DataPreparationPort(Protocol):
         *,
         output_dir: Path | None = None,
     ) -> PreparationOutput:
-        """Run mapping/normalization/split through the canonical Plugin owner."""
+        """Run mapping/normalization/split through the canonical Plugin owner.
+
+        中文:通过 canonical Plugin owner 执行映射、规范化与拆分。
+        """
+
+    # 中文:通过规范 Plugin owner 执行映射/规范化/拆分。
 
     def transform(self, source: Path, destination: Path) -> EngineResult:
-        """Transform a source artifact through the canonical Plugin owner."""
+        """Transform a source artifact through the canonical Plugin owner.
+
+        中文:通过 canonical Plugin owner 转换 source artifact。
+        """
+
+    # 中文:通过规范 Plugin owner 转换来源制品。
 
 
 class DirectPluginDataPreparationPort:
-    """Typed adapter for one resolved ``dataset.preparation.v1`` endpoint."""
+    """Typed adapter for one resolved ``dataset.preparation.v1`` endpoint.
+
+    中文:面向已解析 dataset.preparation.v1 endpoint 的类型化 adapter。
+    """
+
+    # 中文:针对一个已解析的 ``dataset.preparation.v1`` 端点的类型化适配器。
 
     def __init__(self, client: Any, *, deadline_seconds: float = 60.0) -> None:
         self._client = client
@@ -106,7 +146,11 @@ class DirectPluginDataPreparationPort:
 
     @classmethod
     def from_environment(cls) -> DirectPluginDataPreparationPort:
-        """Create the Product adapter from an opaque connection reference."""
+        """Create the Product adapter from an opaque connection reference.
+
+        中文:基于不透明 connection reference 创建 Product adapter。
+        """
+        # 中文:使用不透明连接引用创建 Product 适配器。
 
         connection_ref = os.environ.get(DATASET_PREPARATION_CONNECTION_ENV, "").strip()
         if not connection_ref:
@@ -124,7 +168,11 @@ class DirectPluginDataPreparationPort:
         return cls(client)
 
     def inspect(self, source: Path, *, format_hint: ImportFormat | None = None) -> SourceInspection:
-        """Inspect and validate the Plugin-written row projection."""
+        """Inspect and validate the Plugin-written row projection.
+
+        中文:检查并校验由 Plugin 写入的 row projection。
+        """
+        # 中文:检查并校验 Plugin 写入的行投影。
 
         source_format_hint = (
             format_hint if format_hint in _TABULAR_FORMATS else _tabular_format(source)
@@ -165,7 +213,11 @@ class DirectPluginDataPreparationPort:
         *,
         output_dir: Path | None = None,
     ) -> PreparationOutput:
-        """Execute preparation and validate every owner-produced projection."""
+        """Execute preparation and validate every owner-produced projection.
+
+        中文:执行数据准备并校验 owner 生成的每个 projection。
+        """
+        # 中文:执行 preparation,并校验 owner 生成的每一项投影。
 
         request: dict[str, Any] = {
             "source_path": str(source.resolve()),
@@ -206,7 +258,11 @@ class DirectPluginDataPreparationPort:
         return PreparationOutput(samples, errors, duplicates, assignment, split_stats, files)
 
     def transform(self, source: Path, destination: Path) -> EngineResult:
-        """Execute the Product transform and verify the produced bytes."""
+        """Execute the Product transform and verify the produced bytes.
+
+        中文:执行 Product transform 并核验生成的字节数据。
+        """
+        # 中文:执行 Product 转换并核验生成的字节。
 
         source_format = _tabular_format(source)
         request = {
@@ -228,7 +284,11 @@ class DirectPluginDataPreparationPort:
         )
 
     def _invoke(self, method: str, request: dict[str, Any]) -> dict[str, Any]:
-        """Invoke one typed method and decode a strict object response."""
+        """Invoke one typed method and decode a strict object response.
+
+        中文:调用一个类型化方法,并将响应解码为严格对象。
+        """
+        # 中文:调用一个类型化方法并解码严格对象响应。
 
         try:
             from cyrene_plugin_runtime import DirectPayload, DirectPluginError
@@ -260,7 +320,12 @@ class DirectPluginDataPreparationPort:
 
 
 class UnavailableDataPreparationPort:
-    """Fail-closed Product adapter used when no Plugin binding exists."""
+    """Fail-closed Product adapter used when no Plugin binding exists.
+
+    中文:未配置 Plugin binding 时使用 fail-closed Product adapter。
+    """
+
+    # 中文:在没有 Plugin binding 时使用的 fail-closed Product 适配器。
 
     def __init__(self, reason: str) -> None:
         self._reason = reason
@@ -288,7 +353,11 @@ class UnavailableDataPreparationPort:
 
 
 def data_preparation_from_environment() -> DataPreparationPort:
-    """Resolve the direct Plugin adapter without any local implementation fallback."""
+    """Resolve the direct Plugin adapter without any local implementation fallback.
+
+    中文:解析 Direct Plugin adapter,不提供任何本地实现回退。
+    """
+    # 中文:解析直连 Plugin 适配器,不使用任何本地实现回退。
 
     try:
         return DirectPluginDataPreparationPort.from_environment()
@@ -414,7 +483,11 @@ def _tabular_format(source: Path) -> ImportFormat | None:
 
 
 def _has_parquet_magic(source: Path) -> bool:
-    """Check Parquet's leading and trailing magic bytes without parsing it."""
+    """Check Parquet's leading and trailing magic bytes without parsing it.
+
+    中文:不解析 Parquet,仅检查其起始和结尾的 magic bytes。
+    """
+    # 中文:不解析 Parquet,只检查其开头和结尾的 magic 字节。
 
     try:
         size = source.stat().st_size
@@ -430,7 +503,11 @@ def _has_parquet_magic(source: Path) -> bool:
 
 
 def _looks_like_csv(source: Path) -> bool:
-    """Recognize header-based CSV artifacts whose CAS path has no suffix."""
+    """Recognize header-based CSV artifacts whose CAS path has no suffix.
+
+    中文:识别基于表头的 CSV artifact,即使其 CAS 路径没有扩展名。
+    """
+    # 中文:识别基于表头的 CSV 制品,即使其 CAS 路径没有后缀。
 
     try:
         with source.open("r", encoding="utf-8-sig", newline="") as stream:
@@ -451,7 +528,11 @@ def _looks_like_csv(source: Path) -> bool:
 
 
 def _validate_inspection_schema(rows: list[dict[str, Any]], detected_fields: list[str]) -> None:
-    """Reject owner projections containing columns outside their declared schema."""
+    """Reject owner projections containing columns outside their declared schema.
+
+    中文:拒绝包含声明 schema 之外列的 owner projection。
+    """
+    # 中文:拒绝包含声明模式以外列的 owner 投影。
 
     if (
         len(detected_fields) > 500
