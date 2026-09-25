@@ -21,8 +21,8 @@ jobs:
     timeout-minutes: 30
 
     env:
-      CYRENE_PLATFORM_REVISION: 06a9bd75edfed1359b09770e749520162d75e242
-      CYRENE_PLUGINS_REVISION: a41284c2ffe71a7412f556841f9ccc4a91864138
+      DEP_PLATFORM_REV: 06a9bd75edfed1359b09770e749520162d75e242
+      DEP_PLUGINS_REV: a41284c2ffe71a7412f556841f9ccc4a91864138
 
     steps:
       - name: Checkout Cyrene-Catalyst
@@ -30,10 +30,10 @@ jobs:
         with:
           path: Cyrene-Services/Cyrene-Catalyst
 
-      - name: Fetch sibling repositories (Cyrene-Platform & Cyrene-Plugins-Official)
+      - name: Fetch sibling repositories (Platform & Plugins)
         run: |
-          for entry in "Cyrene-Platform:$CYRENE_PLATFORM_REVISION" \
-                       "Cyrene-Plugins-Official:$CYRENE_PLUGINS_REVISION"; do
+          for entry in "Cyrene-Platform:$DEP_PLATFORM_REV" \
+                       "Cyrene-Plugins-Official:$DEP_PLUGINS_REV"; do
             target="${entry%%:*}"
             revision="${entry#*:}"
             repo_name="$(basename "$target")"
