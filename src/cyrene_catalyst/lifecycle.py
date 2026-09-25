@@ -61,9 +61,9 @@ def _error(code: str, status: int, detail: str) -> CatalystError:
 class LifecycleActions:
     """Product-specific actions over existing preparation and owning Product APIs.
 
-    中文：通过现有的数据准备能力和所属 Product API 执行 Product 专属操作。
+    中文:通过现有的数据准备能力和所属 Product API 执行 Product 专属操作。
     """
-# 中文：面向现有 preparation 和所属 Product API 的 Product 专属操作。
+# 中文:面向现有 preparation 和所属 Product API 的 Product 专属操作。
 
     def __init__(
         self, service: CatalystService, yield_url: str | None, client: httpx.Client | None = None
@@ -76,9 +76,9 @@ class LifecycleActions:
     def send_to_yield(self, version_id: UUID) -> HandoffReceipt:
         """Send references to an instruction DatasetVersion; never start training.
 
-        中文：传递对 instruction DatasetVersion 的引用；绝不启动训练。
+        中文:传递对 instruction DatasetVersion 的引用;绝不启动训练。
         """
-    # 中文：发送对 instruction DatasetVersion 的引用；绝不启动训练。
+    # 中文:发送对 instruction DatasetVersion 的引用;绝不启动训练。
         if self.yield_url is None:
             raise _error(
                 "CATALYST_YIELD_NOT_CONNECTED",
@@ -171,9 +171,9 @@ class LifecycleActions:
     ) -> HandoffReceipt:
         """Create a preparation from explicitly selected feedback, retaining raw provenance.
 
-        中文：根据显式选定的反馈创建数据准备任务，并保留原始来源信息。
+        中文:根据显式选定的反馈创建数据准备任务,并保留原始来源信息。
         """
-    # 中文：根据显式选定的 feedback 创建 preparation，并保留原始来源信息。
+    # 中文:根据显式选定的 feedback 创建 preparation,并保留原始来源信息。
         with self.lock:
             return self._import_feedback(command, key)
 

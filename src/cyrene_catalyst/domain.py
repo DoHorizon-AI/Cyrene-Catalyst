@@ -86,7 +86,7 @@ class ArtifactRef(ContractModel):
     size_bytes: int = Field(ge=0)
     # Artifact kind is an opaque producer-owned category. The wire contract
     # validates its shape but deliberately does not publish a Product vocabulary.
-    # 中文：制品类型是由生产方拥有的不透明类别。线协议会校验其形态，但刻意不发布 Product 词汇表。
+    # 中文:制品类型是由生产方拥有的不透明类别。线协议会校验其形态,但刻意不发布 Product 词汇表。
     kind: str = Field(min_length=1, max_length=128)
     manifest_digest: str | None = Field(
         default=None,
@@ -355,9 +355,9 @@ class PublishPreparationResponse(ContractModel):
 class PreviewRow(ContractModel):
     """One row in the dataset version preview.
 
-    中文：数据集版本预览中的一行。
+    中文:数据集版本预览中的一行。
     """
-# 中文：数据集版本预览中的一行。
+# 中文:数据集版本预览中的一行。
 
     index: int = Field(ge=0)
     mapped: dict[str, Any]
@@ -367,9 +367,9 @@ class PreviewRow(ContractModel):
 class DatasetPreview(ContractModel):
     """Paginated dataset version preview with mapped and raw fields.
 
-    中文：包含映射结果和原始字段的数据集版本分页预览。
+    中文:包含映射结果和原始字段的数据集版本分页预览。
     """
-# 中文：包含映射字段和原始字段的分页数据集版本预览。
+# 中文:包含映射字段和原始字段的分页数据集版本预览。
 
     version_id: UUID
     total_rows: int = Field(ge=0)

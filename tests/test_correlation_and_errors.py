@@ -2,9 +2,9 @@
 Tests for Catalyst W3C trace correlation, secret redaction, structured logging,
 and canonical error code mappings.
 
-中文：测试 Catalyst 的 W3C trace 关联、敏感信息脱敏、结构化日志和规范错误码映射。
+中文:测试 Catalyst 的 W3C trace 关联、敏感信息脱敏、结构化日志和规范错误码映射。
 """
-# 中文：测试 Catalyst 的 W3C trace 关联、密钥脱敏、结构化日志和规范错误代码映射。
+# 中文:测试 Catalyst 的 W3C trace 关联、密钥脱敏、结构化日志和规范错误代码映射。
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def test_parse_w3c_traceparent_invalid() -> None:
     assert parse_w3c_traceparent("") is None
     assert parse_w3c_traceparent("invalid-header") is None
     # All-zero trace ID or span ID
-    # 中文：trace ID 或 span ID 全为零。
+    # 中文:trace ID 或 span ID 全为零。
     assert parse_w3c_traceparent(f"00-{'0' * 32}-{'1' * 16}-01") is None
     assert parse_w3c_traceparent(f"00-{'1' * 32}-{'0' * 16}-01") is None
 
@@ -71,7 +71,7 @@ def test_secret_redaction_and_token_preservation() -> None:
     assert is_sensitive_key("password")
 
     # Tokens and usage metrics must NOT be redacted
-    # 中文：Token 与用量指标不能被脱敏。
+    # 中文:Token 与用量指标不能被脱敏。
     assert not is_sensitive_key("tokens")
     assert not is_sensitive_key("prompt_tokens")
     assert not is_sensitive_key("completion_tokens")
@@ -162,7 +162,7 @@ def test_catalyst_error_mappings() -> None:
         assert mapped["recovery_action"] == expected["recovery_action"]
 
     # Unknown code fallback
-    # 中文：未知代码的回退处理。
+    # 中文:未知代码的回退处理。
     fallback = map_catalyst_error("CATALYST_UNKNOWN_THING")
     assert fallback["code"] == "PRODUCT.CATALYST.UNKNOWN_THING"
     assert fallback["cause_kind"] == "unknown"
@@ -177,14 +177,14 @@ def test_api_traceparent_propagation_and_problem_details(tmp_path: Path) -> None
     client = TestClient(app)
 
     # 1. Custom incoming traceparent and request_id
-    # 中文：1. 自定义传入的 traceparent 和 request_id。
+    # 中文:1. 自定义传入的 traceparent 和 request_id。
     incoming_trace_id = "4bf92f3577b34da6a3ce929d0e0e4736"
     incoming_span_id = "00f067aa0ba902b7"
     incoming_traceparent = f"00-{incoming_trace_id}-{incoming_span_id}-01"
     incoming_req_id = "custom-req-456"
 
     # Test an error endpoint (not found)
-    # 中文：测试错误端点（未找到）。
+    # 中文:测试错误端点(未找到)。
     old_stderr = sys.stderr
     sys.stderr = buffer = io.StringIO()
     try:
@@ -211,6 +211,6 @@ def test_api_traceparent_propagation_and_problem_details(tmp_path: Path) -> None
     assert "https://errors.cyrene.dev/catalyst/product.catalyst.dataset_not_found" in body["type"]
 
     # Check that diagnostic error was emitted to stderr
-    # 中文：检查诊断错误是否已输出到 stderr。
+    # 中文:检查诊断错误是否已输出到 stderr。
     log_output = buffer.getvalue()
     assert "PRODUCT.CATALYST.DATASET_NOT_FOUND" in log_output
