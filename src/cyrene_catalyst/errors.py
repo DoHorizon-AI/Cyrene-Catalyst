@@ -37,6 +37,7 @@ class DataEngineFailure(RuntimeError):
 
 # ════════════════════════════════════════════════════════════════════════
 # Canonical Cyrene Catalyst Error Catalog & Mappings
+# Cyrene Catalyst 标准错误目录与映射
 # ════════════════════════════════════════════════════════════════════════
 CATALYST_ERROR_MAPPINGS: dict[str, dict[str, str]] = {
     "CATALYST_REQUEST_INVALID": {
@@ -103,7 +104,7 @@ CATALYST_ERROR_MAPPINGS: dict[str, dict[str, str]] = {
 
 
 def map_catalyst_error(raw_code: str) -> dict[str, str]:
-    """Map a raw or legacy Catalyst error code to canonical PRODUCT.CATALYST.<REASON>."""
+    """Map a raw or legacy Catalyst error code to canonical PRODUCT.CATALYST.<REASON>. | 将原始或旧版 Catalyst 错误码映射为规范的 PRODUCT.CATALYST.<REASON>。"""
     if raw_code in CATALYST_ERROR_MAPPINGS:
         return CATALYST_ERROR_MAPPINGS[raw_code]
     normalized = raw_code.upper().replace(" ", "_")

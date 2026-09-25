@@ -266,9 +266,11 @@ def test_send_to_yield_creates_training_draft_without_starting_training(tmp_path
         assert request["path"] == "/api/v1/training-drafts"
         assert request["idempotency_key"] == f"catalyst-version:{version_id}:1"
         # Owner schema accepts the outbound payload exactly as sent.
+        # 中文：Owner 模式按原样接受发出的负载。
         request_errors = list(_schema_validator("CreateTrainingDraft").iter_errors(request["body"]))
         assert request_errors == [], [error.message for error in request_errors]
         # The confirmed target resource is the owner's TrainingDraft.
+        # 中文：确认后的目标资源是 owner 的 TrainingDraft。
         assert stub.draft_response is not None
         draft_errors = list(_schema_validator("TrainingDraft").iter_errors(stub.draft_response))
         assert draft_errors == [], [error.message for error in draft_errors]
@@ -276,6 +278,7 @@ def test_send_to_yield_creates_training_draft_without_starting_training(tmp_path
         assert receipt["targetResource"]["uri"] == stub.draft_response["resourceRef"]["uri"]
         assert receipt["openIn"] == f"{stub.url}/api/v1/training-drafts/{stub.draft_response['id']}"
         # Handoff never auto-starts training: no /actions/start request was made.
+        # 中文：Handoff 不会自动启动训练：没有发出 /actions/start 请求。
         assert all("/actions/start" not in path for path in stub.paths())
         app.state.catalyst_store.close()
     finally:
@@ -327,6 +330,7 @@ def test_send_to_yield_fails_closed_when_yield_is_unreachable(tmp_path: Path) ->
         assert problem["code"] == "CATALYST_YIELD_HANDOFF_FAILED"
         assert problem["retryable"] is True
         # The published version is untouched; nothing was fabricated.
+        # 中文：已发布版本未被修改，也未伪造任何数据。
         preparation = client.get(f"/api/v1/preparations/{preparation_id}").json()
         assert preparation["state"] == "PUBLISHED"
         assert preparation["publishedVersionId"] is not None

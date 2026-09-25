@@ -65,3 +65,13 @@ uv run ruff format --check src tests
 uv run mypy
 uv run pytest -q
 ```
+---
+<!-- Chinese Translation / 中文翻译 -->
+
+## Catalyst 服务说明
+
+Catalyst 为 Cyrene AI 软件矩阵提供数据摄取、清理、转换、结构化和 Dataset 创建服务。
+
+当前 Catalyst 提供可运行的 Product API，用于创建 Dataset 和 DatasetVersion、执行确定性 preparation，并显式向 Yield 或 Echo 交接。仓库中的样本为合成数据，仅用于本地验证。历史第三方游戏对话语料已从规范源码树排除，只保留在私有历史归档中；本仓库未授予再分发该语料的权限。
+
+运行时通过 Product 的 `DataPreparationPort` 调用 Plugins 所有的 `dataset.preparation.v1` 能力，并持久化与 Provider 无关的 `ArtifactRef`。Catalyst 通过可替换的本地 `LocalArtifactPlane` 适配器（由固定版本的 Platform Artifact SDK 支持）发布并验证这些引用。Product 负载直接发送给 Yield 或 Echo，不经过 Platform 业务代理。缺失或无效的 Plugin binding 会 fail-closed。Plugin 拥有 JSON/JSONL/text/CSV/Parquet 的解析和导出写入；Catalyst 验证回执并发布不可变引用。Catalyst 不拥有 Platform 训练或模型契约。

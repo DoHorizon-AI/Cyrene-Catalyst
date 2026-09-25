@@ -21,3 +21,9 @@ Catalyst 直接调用已解析的提供方。Product 仅为锁定的提供方契
 
 The port cannot allocate a DatasetVersion, mutate Product state, publish an
 event, select a provider/package, or become Artifact Plane authority.
+---
+<!-- Chinese Translation / 中文翻译 -->
+
+## 端口权限边界
+
+此端口不能分配 DatasetVersion、修改 Product 状态、发布事件、选择 Provider/包，也不能成为 Artifact Plane 的权威来源。
