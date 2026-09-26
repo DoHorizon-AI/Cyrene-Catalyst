@@ -75,6 +75,12 @@ def create_app(
     lifecycle = LifecycleActions(service, yield_url)
     app.state.lifecycle_actions = lifecycle
 
+    @app.get("/healthz", include_in_schema=False)
+    def healthz() -> dict[str, str]:
+        """Report process liveness to the container orchestrator. | 向容器编排器报告进程存活。"""
+
+        return {"status": "ok"}
+
     @app.middleware("http")
     async def propagate_trace(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
