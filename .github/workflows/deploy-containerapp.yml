@@ -13,6 +13,7 @@ on:
 permissions:
   contents: read
   packages: write
+  id-token: write
 
 jobs:
   build-and-deploy:
@@ -23,17 +24,19 @@ jobs:
     env:
       AZURE_RESOURCE_GROUP: Container-APP
       AZURE_APP_NAME: cyrene-catalyst
-      AZURE_LOCATION: eastasia
-      AZURE_CONTAINERAPP_ENV: cae-dh-eastasia
-      AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
     steps:
-      - name: Require Azure deployment credentials
+      - name: Require Azure OIDC configuration
         run: |
-          if [ -z "$AZURE_CREDENTIALS" ]; then
-            echo "AZURE_CREDENTIALS is required for ACA deployment" >&2
-            exit 1
-          fi
+          for variable in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID; do
+            if [ -z "${!variable}" ]; then
+              echo "$variable is required for ACA deployment" >&2
+              exit 1
+            fi
+          done
 
       - name: Checkout Cyrene-Catalyst
         uses: actions/checkout@v5
@@ -84,38 +87,18 @@ jobs:
             ${{ steps.meta.outputs.image }}:latest
 
       - name: Log in to Azure
-        if: env.AZURE_CREDENTIALS != ''
         uses: azure/login@v2
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Deploy or update Azure Container App
-        if: env.AZURE_CREDENTIALS != ''
+      - name: Update Azure Container App
         run: |
-          if az containerapp show --name "$AZURE_APP_NAME" --resource-group "$AZURE_RESOURCE_GROUP" >/dev/null 2>&1; then
-            echo "Updating existing container app $AZURE_APP_NAME in $AZURE_RESOURCE_GROUP..."
-            az containerapp update \
-              --name "$AZURE_APP_NAME" \
-              --resource-group "$AZURE_RESOURCE_GROUP" \
-              --image "${{ steps.meta.outputs.full_image }}"
-          else
-            echo "Creating container app $AZURE_APP_NAME in $AZURE_CONTAINERAPP_ENV ($AZURE_LOCATION)..."
-            az containerapp create \
-              --name "$AZURE_APP_NAME" \
-              --resource-group "$AZURE_RESOURCE_GROUP" \
-              --environment "$AZURE_CONTAINERAPP_ENV" \
-              --image "${{ steps.meta.outputs.full_image }}" \
-              --target-port 8014 \
-              --ingress internal \
-              --registry-server ghcr.io \
-              --registry-username "${{ github.actor }}" \
-              --registry-password "${{ secrets.GITHUB_TOKEN }}" \
-              --cpu 0.25 \
-              --memory 0.5Gi \
-              --min-replicas 1 \
-              --max-replicas 2 \
-              --env-vars CATALYST_HOST="0.0.0.0" CATALYST_PORT="8014"
-          fi
+          az containerapp update \
+            --name "$AZURE_APP_NAME" \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --image "${{ steps.meta.outputs.full_image }}"
 
       - name: Verify healthy internal revision
         run: |
