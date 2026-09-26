@@ -1,0 +1,131 @@
+name: cd-containerapp
+
+on:
+  push:
+    branches: [main, release, develop]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy (defaults to git sha)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-deploy:
+    name: cd / build, push & deploy to Azure Container Apps
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      AZURE_RESOURCE_GROUP: Container-APP
+      AZURE_APP_NAME: cyrene-catalyst
+      AZURE_LOCATION: eastasia
+      AZURE_CONTAINERAPP_ENV: cae-dh-eastasia
+      AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+
+    steps:
+      - name: Checkout Cyrene-Catalyst
+        uses: actions/checkout@v5
+        with:
+          path: Cyrene-Services/Cyrene-Catalyst
+
+      - name: Fetch sibling repositories (Cyrene-Platform & Cyrene-Plugins-Official)
+        run: |
+          TARGET_BRANCH="${GITHUB_REF_NAME:-develop}"
+          for name in Cyrene-Platform Cyrene-Plugins-Official; do
+            echo "Fetching $name (target branch: $TARGET_BRANCH)..."
+            git clone --quiet --depth 1 --branch "$TARGET_BRANCH" "https://github.com/DoHorizon-AI/$name.git" "$name" 2>/dev/null || \
+            git clone --quiet --depth 1 --branch develop "https://github.com/DoHorizon-AI/$name.git" "$name" 2>/dev/null || \
+            git clone --quiet --depth 1 "https://github.com/DoHorizon-AI/$name.git" "$name"
+          done
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: meta
+        run: |
+          REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE="ghcr.io/${REPO_OWNER}/cyrene-catalyst"
+          TAG="${{ github.event.inputs.image_tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="sha-${GITHUB_SHA::7}"
+          fi
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "full_image=${IMAGE}:${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push container image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Cyrene-Services/Cyrene-Catalyst/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+            ${{ steps.meta.outputs.image }}:latest
+
+      - name: Log in to Azure
+        if: env.AZURE_CREDENTIALS != ''
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Deploy or update Azure Container App
+        if: env.AZURE_CREDENTIALS != ''
+        run: |
+          if az containerapp show --name "$AZURE_APP_NAME" --resource-group "$AZURE_RESOURCE_GROUP" >/dev/null 2>&1; then
+            echo "Updating existing container app $AZURE_APP_NAME in $AZURE_RESOURCE_GROUP..."
+            az containerapp update \
+              --name "$AZURE_APP_NAME" \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --image "${{ steps.meta.outputs.full_image }}"
+          else
+            echo "Creating container app $AZURE_APP_NAME in $AZURE_CONTAINERAPP_ENV ($AZURE_LOCATION)..."
+            az containerapp create \
+              --name "$AZURE_APP_NAME" \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --environment "$AZURE_CONTAINERAPP_ENV" \
+              --image "${{ steps.meta.outputs.full_image }}" \
+              --target-port 8014 \
+              --ingress external \
+              --registry-server ghcr.io \
+              --registry-username "${{ github.actor }}" \
+              --registry-password "${{ secrets.GITHUB_TOKEN }}" \
+              --cpu 0.25 \
+              --memory 0.5Gi \
+              --min-replicas 1 \
+              --max-replicas 2 \
+              --env-vars CATALYST_HOST="0.0.0.0" CATALYST_PORT="8014"
+          fi
+
+      - name: Verify Deployment Health and IP Location
+        if: env.AZURE_CREDENTIALS != ''
+        run: |
+          FQDN=$(az containerapp show --name "$AZURE_APP_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --query "properties.configuration.ingress.fqdn" -o tsv)
+          echo "Deployed FQDN: https://$FQDN"
+          echo "Checking IP geolocation..."
+          APP_IP=$(getent hosts "$FQDN" | awk '{ print $1 }' | head -n1 || true)
+          if [ -n "$APP_IP" ]; then
+            echo "Resolved IP: $APP_IP"
+            curl -s "https://ipinfo.io/$APP_IP/json" || true
+          fi
+          echo "Checking health probe (/)..."
+          for i in {1..30}; do
+            if curl -s -f "https://$FQDN/" >/dev/null 2>&1; then
+              echo "Health check passed!"
+              break
+            fi
+            sleep 3
+          done
