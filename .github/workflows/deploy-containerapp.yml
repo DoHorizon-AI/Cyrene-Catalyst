@@ -27,6 +27,8 @@ jobs:
       AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
       AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
       AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      WORKSPACE_SERVICE_AUTH_SECRET_URI: ${{ vars.WORKSPACE_SERVICE_AUTH_SECRET_URI }}
+      WORKSPACE_SERVICE_AUTH_IDENTITY: ${{ vars.WORKSPACE_SERVICE_AUTH_IDENTITY }}
 
     steps:
       - name: Require Azure OIDC configuration
@@ -37,6 +39,41 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Validate optional Workspace auth reference
+        id: workspace-auth
+        shell: bash
+        run: |
+          if [[ -z "$WORKSPACE_SERVICE_AUTH_SECRET_URI" && -z "$WORKSPACE_SERVICE_AUTH_IDENTITY" ]]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Workspace auth reference is not configured; leaving ACA auth settings unchanged."
+            exit 0
+          fi
+
+          if [[ -z "$WORKSPACE_SERVICE_AUTH_SECRET_URI" || -z "$WORKSPACE_SERVICE_AUTH_IDENTITY" ]]; then
+            echo "Both Workspace auth reference variables must be configured together." >&2
+            exit 1
+          fi
+
+          if [[ ! "$WORKSPACE_SERVICE_AUTH_SECRET_URI" =~ ^https://([A-Za-z0-9-]+)\.vault\.azure\.net/secrets/([A-Za-z0-9-]+)$ ]]; then
+            echo "Workspace auth secret URI must be a versionless Azure Key Vault secret URI." >&2
+            exit 1
+          fi
+          echo "vault_name=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          echo "secret_name=${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
+
+          if [[ "$WORKSPACE_SERVICE_AUTH_IDENTITY" != "system" && ! "$WORKSPACE_SERVICE_AUTH_IDENTITY" =~ ^/subscriptions/[^[:space:]/]+/resourceGroups/[^[:space:]/]+/providers/Microsoft\.ManagedIdentity/userAssignedIdentities/[^[:space:]/]+$ ]]; then
+            echo "Workspace auth identity must be 'system' or a managed identity resource ID." >&2
+            exit 1
+          fi
+
+          secret_suffix=$(printf '%s:%s' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" | sha256sum | cut -c1-12)
+          if [[ ! "$secret_suffix" =~ ^[[:xdigit:]]{12}$ ]]; then
+            echo "Could not derive a safe per-run ACA secret name." >&2
+            exit 1
+          fi
+          echo "aca_secret_name=ws-auth-${secret_suffix}" >> "$GITHUB_OUTPUT"
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
 
       - name: Checkout Cyrene-Catalyst
         uses: actions/checkout@v5
@@ -93,12 +130,93 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Update Azure Container App
+      - name: Require internal ACA ingress before changes
+        shell: bash
         run: |
-          az containerapp update \
+          ingress_external=$(az containerapp show \
             --name "$AZURE_APP_NAME" \
             --resource-group "$AZURE_RESOURCE_GROUP" \
-            --image "${{ steps.meta.outputs.full_image }}"
+            --query "properties.configuration.ingress.external" \
+            --output tsv)
+          if [[ "$ingress_external" != "false" ]]; then
+            echo "Refusing ACA update because Product ingress is not confirmed internal." >&2
+            exit 1
+          fi
+          if [[ "${{ steps.workspace-auth.outputs.enabled }}" == "true" ]]; then
+            revision_mode=$(az containerapp show \
+              --name "$AZURE_APP_NAME" \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --query "properties.configuration.activeRevisionsMode" \
+              --output tsv | tr '[:upper:]' '[:lower:]')
+            if [[ "$revision_mode" != "single" ]]; then
+              echo "Workspace auth rollout requires single revision mode so an unready revision cannot take traffic." >&2
+              exit 1
+            fi
+          fi
+
+      - name: Preflight Workspace auth target
+        if: steps.workspace-auth.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          secret_enabled=$(az keyvault secret list \
+            --vault-name "${{ steps.workspace-auth.outputs.vault_name }}" \
+            --query "[?name=='${{ steps.workspace-auth.outputs.secret_name }}'].attributes.enabled | [0]" \
+            --output tsv)
+          if [[ "$secret_enabled" != "true" ]]; then
+            echo "Workspace auth Key Vault secret is missing or disabled." >&2
+            exit 1
+          fi
+
+          if [[ "$WORKSPACE_SERVICE_AUTH_IDENTITY" == "system" ]]; then
+            principal_id=$(az containerapp show \
+              --name "$AZURE_APP_NAME" \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --query "identity.principalId" \
+              --output tsv)
+            if [[ -z "$principal_id" || "$principal_id" == "None" ]]; then
+              echo "Workspace auth system identity is not assigned to the Container App." >&2
+              exit 1
+            fi
+          else
+            assigned_identities=$(az containerapp show \
+              --name "$AZURE_APP_NAME" \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --query "identity.userAssignedIdentities" \
+              --output json)
+            if ! jq -e --arg identity "$WORKSPACE_SERVICE_AUTH_IDENTITY" \
+              'to_entries | any(.key | ascii_downcase == ($identity | ascii_downcase))' \
+              <<< "$assigned_identities" >/dev/null; then
+              echo "Workspace auth user-assigned identity is not assigned to the Container App." >&2
+              exit 1
+            fi
+          fi
+
+      - name: Register Workspace auth Key Vault reference
+        if: steps.workspace-auth.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          az containerapp secret set \
+            --name "$AZURE_APP_NAME" \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --secrets "${{ steps.workspace-auth.outputs.aca_secret_name }}=keyvaultref:${WORKSPACE_SERVICE_AUTH_SECRET_URI},identityref:${WORKSPACE_SERVICE_AUTH_IDENTITY}" \
+            --only-show-errors \
+            --output none
+
+      - name: Update Azure Container App
+        shell: bash
+        run: |
+          if [[ "${{ steps.workspace-auth.outputs.enabled }}" == "true" ]]; then
+            az containerapp update \
+              --name "$AZURE_APP_NAME" \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --image "${{ steps.meta.outputs.full_image }}" \
+              --set-env-vars "CYRENE_WORKSPACE_SERVICE_AUTH_JSON=secretref:${{ steps.workspace-auth.outputs.aca_secret_name }}"
+          else
+            az containerapp update \
+              --name "$AZURE_APP_NAME" \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --image "${{ steps.meta.outputs.full_image }}"
+          fi
 
       - name: Verify healthy internal revision
         run: |
