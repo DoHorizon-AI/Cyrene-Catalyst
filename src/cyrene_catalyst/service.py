@@ -19,13 +19,16 @@ from uuid import UUID, uuid4
 
 from cyrene_catalyst.artifacts import LocalArtifactPlane
 from cyrene_catalyst.domain import (
+    ArtifactRef,
     CreateDatasetRequest,
     CreateDatasetVersionRequest,
     Dataset,
+    DatasetPreview,
     DatasetVersion,
     DatasetVersionState,
     ErrorPreview,
     ExportFile,
+    ImportFormat,
     LineageEdge,
     MappingConfig,
     NormalizationConfig,
@@ -34,18 +37,30 @@ from cyrene_catalyst.domain import (
     Preparation,
     PreparationReport,
     PreparationState,
+    PreviewRow,
     ProductFailure,
     RawPreview,
     SplitConfig,
     utc_now,
 )
-from cyrene_catalyst.engine import DataPreparationPort, PreparationOutput
+from cyrene_catalyst.engine import (
+    DataPreparationPort,
+    PreparationOutput,
+    SourceInspection,
+    _has_parquet_magic,
+)
 from cyrene_catalyst.errors import CatalystError, DataEngineFailure
 from cyrene_catalyst.store import CatalystStore
 
 PREPARATION_ENGINE_BINDING_ID = "catalyst-prep-v1"
 MAX_IMPORT_BYTES = 64 * 1024 * 1024
 MAX_REPORT_ERRORS = 100
+_ExportMediaType = Literal["application/jsonl", "text/csv", "application/vnd.apache.parquet"]
+_EXPORT_MEDIA_TYPES: dict[str, _ExportMediaType] = {
+    "jsonl": "application/jsonl",
+    "csv": "text/csv",
+    "parquet": "application/vnd.apache.parquet",
+}
 
 
 def request_hash(request: CreateDatasetRequest | CreateDatasetVersionRequest) -> str:
@@ -79,6 +94,105 @@ def _schema_fields(mapping: MappingConfig) -> list[str]:
         fields.append("input")
     fields.append("output")
     return fields
+
+
+def _filename_format(filename: str, content_type: str | None = None) -> ImportFormat | None:
+    """Return a tabular hint from the filename or request media type.
+
+    中文:根据文件名或请求 media type 返回表格类型提示。
+    """
+    # 中文:根据文件名或请求媒体类型返回表格格式提示。
+
+    suffix = Path(filename).suffix.casefold()
+    media_type = (content_type or "").split(";", 1)[0].strip().casefold()
+    if suffix == ".csv" or media_type == "text/csv":
+        return ImportFormat.CSV
+    if suffix in {".parquet", ".pq"} or media_type == "application/vnd.apache.parquet":
+        return ImportFormat.PARQUET
+    return None
+
+
+def _schema_error(detail: str, *, unknown: bool = False) -> CatalystError:
+    """Build a stable schema rejection. | 构建稳定的模式拒绝错误。"""
+
+    return CatalystError(
+        code="CATALYST_SCHEMA_UNKNOWN_COLUMN" if unknown else "CATALYST_SCHEMA_INVALID",
+        title="Dataset schema is invalid",
+        detail=detail,
+        status=422,
+    )
+
+
+def _validate_sample_content(content: dict[str, Any], schema_fields: list[str], label: str) -> None:
+    """Validate one Plugin sample against the Product export schema.
+
+    中文:根据 Product 导出 schema 校验一条 Plugin sample。
+    """
+    # 中文:按 Product 导出模式校验一个 Plugin 样本。
+
+    allowed = set(schema_fields)
+    unknown = set(content) - allowed
+    if unknown:
+        raise _schema_error(f"{label} contains unknown columns: {sorted(unknown)}.", unknown=True)
+    if schema_fields == ["conversations"]:
+        if (
+            set(content) != allowed
+            or not isinstance(content["conversations"], list)
+            or not content["conversations"]
+        ):
+            raise _schema_error(f"{label} must contain a conversations array.")
+        for message in content["conversations"]:
+            if not isinstance(message, dict) or set(message) != {"from", "value"}:
+                raise _schema_error(f"{label} contains an invalid conversation message.")
+            if not all(isinstance(message[key], str) and message[key].strip() for key in message):
+                raise _schema_error(f"{label} contains an empty conversation message.")
+        return
+
+    required = {"instruction", "output"}
+    if not required <= set(content):
+        raise _schema_error(f"{label} is missing required instruction columns.")
+    if not all(isinstance(content[field], str) and content[field].strip() for field in required):
+        raise _schema_error(f"{label} contains an empty instruction or output value.")
+    if "input" in content and not isinstance(content["input"], str):
+        raise _schema_error(f"{label}.input must be a string when present.")
+
+
+def _validate_samples(output: PreparationOutput, schema_fields: list[str]) -> None:
+    """Validate all normalized samples before any export is published.
+
+    中文:在发布任何导出内容前校验全部规范化样本。
+    """
+    # 中文:在发布任何导出前先校验所有规范化样本。
+
+    for sample in output.samples:
+        _validate_sample_content(sample.content, schema_fields, f"sample {sample.index}")
+
+
+def _read_jsonl_preview(path: Path, *, limit: int, offset: int) -> tuple[int, list[dict[str, Any]]]:
+    """Read a bounded page while counting a normalized JSONL export.
+
+    中文:读取有界页面,同时统计规范化 JSONL 导出内容。
+    """
+    # 中文:读取一个有界页面,同时统计规范化 JSONL 导出记录数。
+
+    selected: list[dict[str, Any]] = []
+    total = 0
+    try:
+        with path.open("r", encoding="utf-8") as stream:
+            for line_number, line in enumerate(stream, start=1):
+                if not line.strip():
+                    raise DataEngineFailure(
+                        f"published JSONL contains a blank row at line {line_number}"
+                    )
+                row = json.loads(line)
+                if not isinstance(row, dict):
+                    raise DataEngineFailure(f"published JSONL row {line_number} is not an object")
+                if offset <= total < offset + limit:
+                    selected.append(row)
+                total += 1
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise DataEngineFailure("published JSONL artifact is unreadable") from exc
+    return total, selected
 
 
 class CatalystService:
@@ -229,7 +343,102 @@ class CatalystService:
             )
         return version
 
+    def list_versions(self, dataset_id: UUID) -> list[DatasetVersion]:
+        """List the DatasetVersions of one Dataset, newest first.
+
+        Exposed so console UIs can offer a version picker instead of requiring a
+        UUID to be pasted by hand.
+
+        中文：按时间从新到旧列出某个 Dataset 的 DatasetVersion。
+        此接口可供 console UI 提供版本选择器,免得用户手动粘贴 UUID。
+        """
+        # 中文:按最新优先顺序列出一个 Dataset 的 DatasetVersion。此操作供控制台 UI 提供版本选择器,
+        # 避免要求用户手动粘贴 UUID。
+
+        return self.store.list_versions(dataset_id)
+
+    def preview_version(
+        self, version_id: UUID, *, limit: int = 10, offset: int = 0
+    ) -> DatasetPreview:
+        """Preview paginated samples of a published DatasetVersion. | 预览样本。"""
+
+        version = self.get_version(version_id)
+        if version.output is None:
+            raise CatalystError(
+                code="CATALYST_ARTIFACT_UNAVAILABLE",
+                title="Artifact unavailable",
+                detail="DatasetVersion has no published output artifact.",
+                status=503,
+            )
+
+        try:
+            output_path = self.artifacts.resolve(version.output)
+        except Exception as exc:
+            raise CatalystError(
+                code="CATALYST_ARTIFACT_UNAVAILABLE",
+                title="Artifact unavailable",
+                detail=f"Output artifact could not be resolved: {exc}",
+                status=503,
+            ) from exc
+
+        if not output_path.exists():
+            raise CatalystError(
+                code="CATALYST_ARTIFACT_UNAVAILABLE",
+                title="Artifact unavailable",
+                detail="Output artifact file does not exist on disk.",
+                status=503,
+            )
+
+        try:
+            if _has_parquet_magic(output_path):
+                inspection = self._inspect_source(output_path, ImportFormat.PARQUET)
+                total_rows = inspection.row_count
+                rows = inspection.rows[offset : offset + limit]
+            else:
+                manifest = json.loads(output_path.read_text(encoding="utf-8"))
+                if not isinstance(manifest, dict) or not isinstance(manifest.get("files"), dict):
+                    raise DataEngineFailure("output artifact is not a valid dataset manifest")
+                files = manifest["files"]
+                target = files.get("train") or files.get("train.jsonl")
+                if target is not None:
+                    reference = ArtifactRef.model_validate(target)
+                    target_path = self.artifacts.resolve(reference)
+                    total_rows, rows = _read_jsonl_preview(target_path, limit=limit, offset=offset)
+                else:
+                    parquet_target = files.get("train.parquet")
+                    if parquet_target is None:
+                        raise DataEngineFailure("manifest has no training preview artifact")
+                    reference = ArtifactRef.model_validate(parquet_target)
+                    target_path = self.artifacts.resolve(reference)
+                    inspection = self._inspect_source(target_path, ImportFormat.PARQUET)
+                    total_rows = inspection.row_count
+                    rows = inspection.rows[offset : offset + limit]
+        except Exception as exc:
+            raise CatalystError(
+                code="CATALYST_ARTIFACT_UNAVAILABLE",
+                title="Artifact unavailable",
+                detail=f"Published preview artifact is unreadable: {exc}",
+                status=503,
+            ) from exc
+
+        preview_rows: list[PreviewRow] = []
+        for index, row in enumerate(rows, start=offset):
+            preview_rows.append(
+                PreviewRow(
+                    index=index,
+                    mapped=dict(row),
+                    raw=dict(row),
+                )
+            )
+
+        return DatasetPreview(
+            version_id=version.id,
+            total_rows=total_rows,
+            rows=preview_rows,
+        )
+
     # ── Preparation workflow ────────────────────────────────────────────
+    # 中文:准备工作流。
 
     def list_datasets(self) -> list[Dataset]:
         """List Datasets for the UI. | 列出 Dataset。"""
@@ -263,12 +472,15 @@ class CatalystService:
         filename: str,
         data: bytes,
         idempotency_key: str | None,
+        content_type: str | None = None,
     ) -> Preparation:
         """Ingest raw source bytes and stage a preparation. | 摄取字节并建立整理会话。"""
 
         self.get_dataset(dataset_id)
         scope = f"create-preparation:{dataset_id}"
-        request_digest = hashlib.sha256(f"{name}\0{filename}\0".encode() + data).hexdigest()
+        request_digest = hashlib.sha256(
+            f"{name}\0{filename}\0{content_type or ''}\0".encode() + data
+        ).hexdigest()
         replay_id = self.store.resolve_idempotency(scope, idempotency_key, request_digest)
         if replay_id is not None:
             return self.get_preparation(UUID(replay_id))
@@ -283,7 +495,20 @@ class CatalystService:
         source = self.artifacts.ingest_bytes(
             data, f"import-{uuid4().hex}-{Path(filename).name or 'source'}"
         )
-        inspection = self.engine.inspect(self.artifacts.resolve(source))
+        try:
+            inspection = self._inspect_source(
+                self.artifacts.resolve(source),
+                _filename_format(filename, content_type),
+            )
+        except CatalystError:
+            raise
+        except DataEngineFailure as exc:
+            raise CatalystError(
+                code="CATALYST_IMPORT_INVALID",
+                title="Import could not be parsed",
+                detail="The source is not a supported dataset format or schema.",
+                status=422,
+            ) from exc
         now = utc_now()
         preparation = Preparation(
             id=uuid4(),
@@ -370,12 +595,13 @@ class CatalystService:
             "configure mapping",
         )
         self._validate_mapping_fields(preparation, mapping)
-        output = self.engine.prepare(
-            self.artifacts.resolve(preparation.source),
+        output = self._prepare_output(
+            preparation.source,
             preparation.format,
             mapping,
             normalization,
         )
+        _validate_samples(output, _schema_fields(mapping))
         report = _build_report(preparation.row_count, output)
         updated = preparation.model_copy(
             update={
@@ -403,13 +629,14 @@ class CatalystService:
         )
         assert preparation.mapping is not None
         assert preparation.normalization is not None
-        output = self.engine.prepare(
-            self.artifacts.resolve(preparation.source),
+        output = self._prepare_output(
+            preparation.source,
             preparation.format,
             preparation.mapping,
             preparation.normalization,
             split,
         )
+        _validate_samples(output, _schema_fields(preparation.mapping))
         stats = output.split_stats
         if stats is None:
             raise DataEngineFailure("dataset preparation Plugin omitted split statistics")
@@ -454,11 +681,12 @@ class CatalystService:
         self._require_state(preparation, {PreparationState.CONFIRMED}, "publish")
 
         assert preparation.mapping is not None  # state guarantees configuration
+        # 中文:该状态保证配置已存在
         assert preparation.normalization is not None
         assert preparation.split is not None
         staging = self.artifacts.stage_dir(f"prep-{preparation.id}")
-        output = self.engine.prepare(
-            self.artifacts.resolve(preparation.source),
+        output = self._prepare_output(
+            preparation.source,
             preparation.format,
             preparation.mapping,
             preparation.normalization,
@@ -469,44 +697,55 @@ class CatalystService:
         stats = output.split_stats
         if stats is None:
             raise DataEngineFailure("dataset preparation Plugin omitted split statistics")
+        schema_fields = _schema_fields(preparation.mapping)
+        _validate_samples(output, schema_fields)
+        train_rows = [
+            sample.content for sample in output.samples if assignment[sample.index] == "train"
+        ]
+        val_rows = [
+            sample.content for sample in output.samples if assignment[sample.index] == "val"
+        ]
+        error_rows = [error.model_dump(by_alias=True) for error in output.errors]
 
         exports: list[ExportFile] = []
         lineage: list[LineageEdge] = []
         file_refs: dict[str, Any] = {}
-        export_bundles: list[tuple[str, Literal["application/jsonl"]]] = [
-            ("train.jsonl", "application/jsonl"),
-            ("val.jsonl", "application/jsonl"),
-            ("errors.jsonl", "application/jsonl"),
-        ]
-        for file_name, media_type in export_bundles:
-            path = staging / file_name
-            receipt = output.files.get(file_name)
-            if not isinstance(receipt, dict):
-                raise DataEngineFailure(f"dataset preparation Plugin omitted {file_name}")
-            row_count = self._verify_plugin_export(path, file_name, receipt)
-            if file_name == "errors.jsonl":
-                path.write_bytes(
-                    b"".join(
-                        error.model_dump_json(by_alias=True).encode("utf-8") + b"\n"
-                        for error in output.errors
+        expected_rows = {
+            "train": train_rows,
+            "val": val_rows,
+            "errors": error_rows,
+        }
+        for bundle_name, rows in expected_rows.items():
+            for suffix, media_type in _EXPORT_MEDIA_TYPES.items():
+                file_name = f"{bundle_name}.{suffix}"
+                path = staging / file_name
+                receipt = output.files.get(file_name)
+                if not isinstance(receipt, dict):
+                    raise DataEngineFailure(f"dataset preparation Plugin omitted {file_name}")
+                row_count = self._verify_plugin_export(
+                    path,
+                    file_name,
+                    receipt,
+                    schema_fields=(
+                        schema_fields if suffix == "jsonl" and bundle_name != "errors" else None
+                    ),
+                    expected_count=len(rows),
+                    expected_rows=rows if suffix == "jsonl" else None,
+                )
+                reference = self.artifacts.publish(path, "dataset")
+                exports.append(
+                    ExportFile(
+                        name=file_name,
+                        artifact=reference,
+                        row_count=row_count,
+                        media_type=media_type,
                     )
                 )
-                row_count = len(output.errors)
-            reference = self.artifacts.publish(path, "dataset")
-            exports.append(
-                ExportFile(
-                    name=file_name,
-                    artifact=reference,
-                    row_count=row_count,
-                    media_type=media_type,
+                manifest_key = bundle_name if suffix == "jsonl" else file_name
+                file_refs[manifest_key] = reference.model_dump(by_alias=True, exclude_none=True)
+                lineage.append(
+                    LineageEdge(from_digest=preparation.source.digest, to_digest=reference.digest)
                 )
-            )
-            file_refs[file_name.removesuffix(".jsonl")] = reference.model_dump(
-                by_alias=True, exclude_none=True
-            )
-            lineage.append(
-                LineageEdge(from_digest=preparation.source.digest, to_digest=reference.digest)
-            )
 
         manifest = {
             "manifestVersion": 1,
@@ -593,8 +832,20 @@ class CatalystService:
         return published, version
 
     @staticmethod
-    def _verify_plugin_export(path: Path, file_name: str, receipt: dict[str, Any]) -> int:
-        """Verify an owner-written export before projecting it into Product storage."""
+    def _verify_plugin_export(
+        path: Path,
+        file_name: str,
+        receipt: dict[str, Any],
+        *,
+        schema_fields: list[str] | None = None,
+        expected_count: int | None = None,
+        expected_rows: list[dict[str, Any]] | None = None,
+    ) -> int:
+        """Verify an owner-written export before projecting it into Product storage.
+
+        中文:将 owner 编写的导出投影到 Product 存储前先进行校验。
+        """
+        # 中文:在投影到 Product 存储之前,验证 owner 写入的导出。
 
         row_count = receipt.get("row_count")
         size = receipt.get("size")
@@ -609,6 +860,20 @@ class CatalystService:
             raise DataEngineFailure(f"Plugin export {file_name} is missing or truncated")
         if f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}" != digest:
             raise DataEngineFailure(f"Plugin export {file_name} failed digest verification")
+        if expected_count is not None and row_count != expected_count:
+            raise DataEngineFailure(f"Plugin export {file_name} has an invalid row count")
+        if schema_fields is not None or expected_rows is not None:
+            try:
+                rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise DataEngineFailure(f"Plugin export {file_name} is not valid JSONL") from exc
+            if len(rows) != row_count or not all(isinstance(row, dict) for row in rows):
+                raise DataEngineFailure(f"Plugin export {file_name} has an invalid schema")
+            if expected_rows is not None and rows != expected_rows:
+                raise DataEngineFailure(f"Plugin export {file_name} does not match its result")
+            if schema_fields is not None:
+                for index, row in enumerate(rows, start=1):
+                    _validate_sample_content(row, schema_fields, f"{file_name} row {index}")
         return row_count
 
     def resolve_export(self, preparation_id: UUID, file_name: str) -> ExportFile:
@@ -626,11 +891,65 @@ class CatalystService:
         )
 
     # ── Preparation internals ───────────────────────────────────────────
+    # 中文:准备内部实现。
+
+    def _inspect_source(self, source: Path, format_hint: ImportFormat | None) -> SourceInspection:
+        """Inspect a source while tolerating older test-port implementations.
+
+        中文:读取 source 时兼容较早的 test-port 实现。
+        """
+        # 中文:检查来源,并兼容较旧的测试端口实现。
+
+        if format_hint is None:
+            return self.engine.inspect(source)
+        try:
+            return self.engine.inspect(source, format_hint=format_hint)
+        except TypeError as exc:
+            if "format_hint" not in str(exc):
+                raise
+            return self.engine.inspect(source)
+
+    def _prepare_output(
+        self,
+        source: Any,
+        source_format: ImportFormat,
+        mapping: MappingConfig,
+        normalization: NormalizationConfig,
+        split: SplitConfig | None = None,
+        *,
+        output_dir: Path | None = None,
+    ) -> PreparationOutput:
+        """Run the Plugin and project failures into Product errors.
+
+        中文:运行 Plugin,并将失败投影为 Product 错误。
+        """
+        # 中文:运行 Plugin 并将失败映射为 Product 错误。
+
+        try:
+            return self.engine.prepare(
+                self.artifacts.resolve(source),
+                source_format,
+                mapping,
+                normalization,
+                split,
+                output_dir=output_dir,
+            )
+        except CatalystError:
+            raise
+        except DataEngineFailure as exc:
+            raise CatalystError(
+                code="CATALYST_DATA_PROCESSING_FAILED",
+                title="Data processing failed",
+                detail="The dataset preparation engine rejected the requested schema.",
+                status=422,
+            ) from exc
 
     def _load_rows(self, preparation: Preparation) -> list[dict[str, Any]]:
         """Re-parse rows from the immutable source artifact. | 从源制品重新解析。"""
 
-        inspection = self.engine.inspect(self.artifacts.resolve(preparation.source))
+        inspection = self._inspect_source(
+            self.artifacts.resolve(preparation.source), preparation.format
+        )
         if inspection.source_format is not preparation.format:
             raise DataEngineFailure("dataset preparation Plugin changed the source format")
         return inspection.rows
@@ -639,9 +958,10 @@ class CatalystService:
         """Re-run the deterministic pipeline for a configured preparation. | 重跑确定性流水线。"""
 
         assert preparation.mapping is not None  # guarded by _require_mapped
+        # 中文:由 _require_mapped 进行保护
         assert preparation.normalization is not None
-        return self.engine.prepare(
-            self.artifacts.resolve(preparation.source),
+        return self._prepare_output(
+            preparation.source,
             preparation.format,
             preparation.mapping,
             preparation.normalization,

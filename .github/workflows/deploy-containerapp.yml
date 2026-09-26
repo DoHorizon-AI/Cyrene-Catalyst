@@ -1,0 +1,125 @@
+name: cd-containerapp
+
+on:
+  push:
+    branches: [main, release, develop]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy (defaults to git sha)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  build-and-deploy:
+    name: cd / build, push & deploy to Azure Container Apps
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      AZURE_RESOURCE_GROUP: Container-APP
+      AZURE_APP_NAME: cyrene-catalyst
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+    steps:
+      - name: Require Azure OIDC configuration
+        run: |
+          for variable in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID; do
+            if [ -z "${!variable}" ]; then
+              echo "$variable is required for ACA deployment" >&2
+              exit 1
+            fi
+          done
+
+      - name: Checkout Cyrene-Catalyst
+        uses: actions/checkout@v5
+        with:
+          path: Cyrene-Services/Cyrene-Catalyst
+
+      - name: Fetch sibling repositories (Cyrene-Platform & Cyrene-Plugins-Official)
+        run: |
+          TARGET_BRANCH="${GITHUB_REF_NAME:-develop}"
+          for name in Cyrene-Platform Cyrene-Plugins-Official; do
+            echo "Fetching $name (target branch: $TARGET_BRANCH)..."
+            git clone --quiet --depth 1 --branch "$TARGET_BRANCH" "https://github.com/DoHorizon-AI/$name.git" "$name" 2>/dev/null || \
+            git clone --quiet --depth 1 --branch develop "https://github.com/DoHorizon-AI/$name.git" "$name" 2>/dev/null || \
+            git clone --quiet --depth 1 "https://github.com/DoHorizon-AI/$name.git" "$name"
+          done
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: meta
+        run: |
+          REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE="ghcr.io/${REPO_OWNER}/cyrene-catalyst"
+          TAG="${{ github.event.inputs.image_tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="sha-${GITHUB_SHA::7}"
+          fi
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "full_image=${IMAGE}:${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push container image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Cyrene-Services/Cyrene-Catalyst/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+            ${{ steps.meta.outputs.image }}:latest
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Update Azure Container App
+        run: |
+          az containerapp update \
+            --name "$AZURE_APP_NAME" \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --image "${{ steps.meta.outputs.full_image }}"
+
+      - name: Verify healthy internal revision
+        run: |
+          for i in {1..60}; do
+            INGRESS_EXTERNAL=$(az containerapp show --name "$AZURE_APP_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --query "properties.configuration.ingress.external" -o tsv)
+            if [ "$INGRESS_EXTERNAL" != "false" ]; then
+              echo "Product ingress is not internal" >&2
+              exit 1
+            fi
+            REVISION=$(az containerapp show --name "$AZURE_APP_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --query "properties.latestRevisionName" -o tsv)
+            READY=$(az containerapp show --name "$AZURE_APP_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --query "properties.latestReadyRevisionName" -o tsv)
+            if [ -n "$REVISION" ] && [ "$REVISION" = "$READY" ]; then
+              HEALTH=$(az containerapp revision show --name "$AZURE_APP_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --revision "$REVISION" --query "properties.healthState" -o tsv)
+              IMAGE=$(az containerapp revision show --name "$AZURE_APP_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --revision "$REVISION" --query "properties.template.containers[0].image" -o tsv)
+              if [ "$HEALTH" = "Healthy" ] && [ "$IMAGE" = "${{ steps.meta.outputs.full_image }}" ]; then
+                echo "Healthy internal revision: $REVISION ($IMAGE)"
+                exit 0
+              fi
+            fi
+            echo "Waiting for healthy revision with image ${{ steps.meta.outputs.full_image }} ($i/60)"
+            sleep 3
+          done
+          echo "Product revision did not become healthy with the expected image" >&2
+          exit 1

@@ -60,3 +60,12 @@ owner 的新 `Cyrene-Yield` `main` 可达。owner 仓库仍为 private，因此�
   tests against the snapshot.
 - Yield owns `TrainingDraft`, `DatasetVersionRef`, and the `ArtifactRef` projection;
   Catalyst consumes only the `POST /api/v1/training-drafts` boundary.
+---
+<!-- Chinese Translation / 中文翻译 -->
+
+## 规则补充译文
+
+- 普通 build/test 只读取此快照；不得要求相邻 Yield 检出、绝对路径或 Yield 实现源码。
+- 刷新时必须从经过审查且可达的 Yield SHA 重新复制既定的四个快照文件，并更新摘要表；不得手工编辑快照内容或加入其他 owner 文件。
+- `tests/test_yield_contract.py` 会校验这些摘要，并基于该快照运行 consumer contract tests。
+- Yield 拥有 `TrainingDraft`、`DatasetVersionRef` 和 `ArtifactRef` 投影；Catalyst 仅以 `POST /api/v1/training-drafts` 这一 consumer 边界消费它们。

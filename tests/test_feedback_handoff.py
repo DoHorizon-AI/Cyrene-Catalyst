@@ -52,3 +52,27 @@ def test_feedback_import_replay_preserves_one_unpublished_preparation(tmp_path: 
             client.post("/api/v1/feedback-imports", json=payload, headers=headers).json() == receipt
         )
     restarted.state.catalyst_store.close()
+
+
+def test_feedback_import_rejects_non_echo_or_mismatched_source_identity(tmp_path: Path) -> None:
+    root = tmp_path / "artifacts"
+    artifacts = LocalArtifactPlane(root)
+    artifact = artifacts.ingest_bytes(
+        b'{"instruction":"q","input":"","output":"corrected"}\n',
+        name="feedback.jsonl",
+    )
+    app = create_app(database_path=tmp_path / "catalyst.db", artifact_root=root)
+    source_id = "11111111-1111-4111-8111-111111111111"
+    payload = {
+        "sourceRef": {
+            "uri": "cyrene://navigator/feedback-sets/22222222-2222-4222-8222-222222222222",
+            "id": source_id,
+            "resourceVersion": 1,
+        },
+        "artifact": artifact.model_dump(exclude_none=True),
+    }
+    with TestClient(app) as client:
+        response = client.post("/api/v1/feedback-imports", json=payload)
+    assert response.status_code == 422
+    assert response.json()["code"] == "CATALYST_FEEDBACK_SOURCE_INVALID"
+    app.state.catalyst_store.close()

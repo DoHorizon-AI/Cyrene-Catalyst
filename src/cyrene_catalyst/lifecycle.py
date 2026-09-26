@@ -59,7 +59,12 @@ def _error(code: str, status: int, detail: str) -> CatalystError:
 
 
 class LifecycleActions:
-    """Product-specific actions over existing preparation and owning Product APIs."""
+    """Product-specific actions over existing preparation and owning Product APIs.
+
+    中文:通过现有的数据准备能力和所属 Product API 执行 Product 专属操作。
+    """
+
+    # 中文:面向现有 preparation 和所属 Product API 的 Product 专属操作。
 
     def __init__(
         self, service: CatalystService, yield_url: str | None, client: httpx.Client | None = None
@@ -70,7 +75,11 @@ class LifecycleActions:
         self.lock = RLock()
 
     def send_to_yield(self, version_id: UUID) -> HandoffReceipt:
-        """Send references to an instruction DatasetVersion; never start training."""
+        """Send references to an instruction DatasetVersion; never start training.
+
+        中文:传递对 instruction DatasetVersion 的引用;绝不启动训练。
+        """
+        # 中文:发送对 instruction DatasetVersion 的引用;绝不启动训练。
         if self.yield_url is None:
             raise _error(
                 "CATALYST_YIELD_NOT_CONNECTED",
@@ -97,7 +106,14 @@ class LifecycleActions:
                 "V1 supports published instruction/Alpaca JSONL preparations.",
             )
         exports = {item.name: item for item in preparation.exports}
-        train = exports["train.jsonl"]
+        train = exports.get("train.jsonl")
+        validation = exports.get("val.jsonl")
+        if train is None or validation is None:
+            raise _error(
+                "CATALYST_STATE_CORRUPT",
+                500,
+                "The published DatasetVersion is missing its canonical JSONL exports.",
+            )
         if not train.row_count:
             raise _error(
                 "CATALYST_YIELD_EMPTY_TRAINING_DATA",
@@ -110,7 +126,7 @@ class LifecycleActions:
             "resourceVersion": version.resource_version,
             "format": "ALPACA_JSONL",
             "artifact": train.artifact.model_dump(exclude_none=True),
-            "validationArtifact": exports["val.jsonl"].artifact.model_dump(exclude_none=True),
+            "validationArtifact": validation.artifact.model_dump(exclude_none=True),
             "provenanceRefs": preparation.source_refs,
         }
         try:
@@ -125,13 +141,18 @@ class LifecycleActions:
                 },
             )
             response.raise_for_status()
+            if response.status_code != 201:
+                raise ValueError("Yield did not return the contractually required 201 status")
             target = response.json()
             reference = ResourceRef.model_validate(target["resourceRef"])
-            if str(reference.id) != target["id"] or target["state"] not in {
-                "DRAFT",
-                "PREPARED",
-                "STARTED",
-            }:
+            returned_source = target["datasetVersion"]
+            if (
+                str(reference.id) != target["id"]
+                or reference.uri != f"cyrene://yield/training-drafts/{reference.id}"
+                or target["state"] not in {"DRAFT", "PREPARED", "STARTED"}
+                or returned_source.get("id") != str(version.id)
+                or returned_source.get("resourceVersion") != version.resource_version
+            ):
                 raise ValueError("Invalid target draft identity or state")
         except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
             raise _error(
@@ -149,11 +170,22 @@ class LifecycleActions:
     def import_feedback(
         self, command: FeedbackImportRequest, key: str | None = None
     ) -> HandoffReceipt:
-        """Create a preparation from explicitly selected feedback, retaining raw provenance."""
+        """Create a preparation from explicitly selected feedback, retaining raw provenance.
+
+        中文:根据显式选定的反馈创建数据准备任务,并保留原始来源信息。
+        """
+        # 中文:根据显式选定的 feedback 创建 preparation,并保留原始来源信息。
         with self.lock:
             return self._import_feedback(command, key)
 
     def _import_feedback(self, command: FeedbackImportRequest, key: str | None) -> HandoffReceipt:
+        expected_source_uri = f"cyrene://echo/feedback-sets/{command.source_ref.id}"
+        if command.source_ref.uri != expected_source_uri:
+            raise _error(
+                "CATALYST_FEEDBACK_SOURCE_INVALID",
+                422,
+                "Feedback sourceRef must identify the matching Echo feedback set.",
+            )
         key = key or f"echo-feedback:{command.source_ref.id}:{command.source_ref.resource_version}"
         digest = hashlib.sha256(command.model_dump_json().encode()).hexdigest()
         replay = self.service.store.resolve_idempotency("feedback-import", key, digest)
