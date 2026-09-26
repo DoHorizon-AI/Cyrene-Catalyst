@@ -28,6 +28,13 @@ jobs:
       AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
 
     steps:
+      - name: Require Azure deployment credentials
+        run: |
+          if [ -z "$AZURE_CREDENTIALS" ]; then
+            echo "AZURE_CREDENTIALS is required for ACA deployment" >&2
+            exit 1
+          fi
+
       - name: Checkout Cyrene-Catalyst
         uses: actions/checkout@v5
         with:
@@ -99,7 +106,7 @@ jobs:
               --environment "$AZURE_CONTAINERAPP_ENV" \
               --image "${{ steps.meta.outputs.full_image }}" \
               --target-port 8014 \
-              --ingress external \
+              --ingress internal \
               --registry-server ghcr.io \
               --registry-username "${{ github.actor }}" \
               --registry-password "${{ secrets.GITHUB_TOKEN }}" \
@@ -110,22 +117,26 @@ jobs:
               --env-vars CATALYST_HOST="0.0.0.0" CATALYST_PORT="8014"
           fi
 
-      - name: Verify Deployment Health and IP Location
-        if: env.AZURE_CREDENTIALS != ''
+      - name: Verify healthy internal revision
         run: |
-          FQDN=$(az containerapp show --name "$AZURE_APP_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --query "properties.configuration.ingress.fqdn" -o tsv)
-          echo "Deployed FQDN: https://$FQDN"
-          echo "Checking IP geolocation..."
-          APP_IP=$(getent hosts "$FQDN" | awk '{ print $1 }' | head -n1 || true)
-          if [ -n "$APP_IP" ]; then
-            echo "Resolved IP: $APP_IP"
-            curl -s "https://ipinfo.io/$APP_IP/json" || true
-          fi
-          echo "Checking health probe (/)..."
-          for i in {1..30}; do
-            if curl -s -f "https://$FQDN/" >/dev/null 2>&1; then
-              echo "Health check passed!"
-              break
+          for i in {1..60}; do
+            INGRESS_EXTERNAL=$(az containerapp show --name "$AZURE_APP_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --query "properties.configuration.ingress.external" -o tsv)
+            if [ "$INGRESS_EXTERNAL" != "false" ]; then
+              echo "Product ingress is not internal" >&2
+              exit 1
             fi
+            REVISION=$(az containerapp show --name "$AZURE_APP_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --query "properties.latestRevisionName" -o tsv)
+            READY=$(az containerapp show --name "$AZURE_APP_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --query "properties.latestReadyRevisionName" -o tsv)
+            if [ -n "$REVISION" ] && [ "$REVISION" = "$READY" ]; then
+              HEALTH=$(az containerapp revision show --name "$AZURE_APP_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --revision "$REVISION" --query "properties.healthState" -o tsv)
+              IMAGE=$(az containerapp revision show --name "$AZURE_APP_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --revision "$REVISION" --query "properties.template.containers[0].image" -o tsv)
+              if [ "$HEALTH" = "Healthy" ] && [ "$IMAGE" = "${{ steps.meta.outputs.full_image }}" ]; then
+                echo "Healthy internal revision: $REVISION ($IMAGE)"
+                exit 0
+              fi
+            fi
+            echo "Waiting for healthy revision with image ${{ steps.meta.outputs.full_image }} ($i/60)"
             sleep 3
           done
+          echo "Product revision did not become healthy with the expected image" >&2
+          exit 1
