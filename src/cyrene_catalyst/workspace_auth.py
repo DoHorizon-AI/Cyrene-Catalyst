@@ -126,7 +126,7 @@ class WorkspaceServiceAuthenticator:
         try:
             token_bytes = token.encode("ascii")
         except UnicodeEncodeError:
-            return None
+            return None  # diagnostic-allow: non-ASCII bearer tokens must fail authentication
         if len(token_bytes) < _MIN_TOKEN_BYTES:
             return None
 
