@@ -50,6 +50,10 @@ from cyrene_catalyst.logging import (
 )
 from cyrene_catalyst.service import CatalystService
 from cyrene_catalyst.store import CatalystStore
+from cyrene_catalyst.workspace_auth import (
+    WorkspaceServiceAuthenticator,
+    WorkspaceServicePrincipal,
+)
 
 _UI_HTML = (Path(__file__).parent / "ui" / "index.html").read_text(encoding="utf-8")
 
@@ -60,6 +64,7 @@ def create_app(
     artifact_root: Path,
     engine: DataPreparationPort | None = None,
     yield_url: str | None = None,
+    workspace_authenticator: WorkspaceServiceAuthenticator | None = None,
 ) -> FastAPI:
     """Build an app with explicit durable adapters. | 使用显式持久化适配器创建应用。"""
 
@@ -72,6 +77,9 @@ def create_app(
     app = FastAPI(title="Cyrene Catalyst Product API", version="1.0.0")
     app.state.catalyst_store = store
     app.state.catalyst_service = service
+    app.state.workspace_authenticator = (
+        workspace_authenticator or WorkspaceServiceAuthenticator.from_json(None)
+    )
     lifecycle = LifecycleActions(service, yield_url)
     app.state.lifecycle_actions = lifecycle
 
@@ -99,7 +107,55 @@ def create_app(
         request.state.span_id = span_id
         request.state.request_id = request_id
 
-        response = await call_next(request)
+        response: Response
+        private_routes = {
+            ("GET", "/internal/workspace/v1/datasets"),
+            ("POST", "/internal/workspace/v1/datasets"),
+        }
+        if (request.method, request.url.path) in private_routes:
+            authenticator: WorkspaceServiceAuthenticator = app.state.workspace_authenticator
+            principal = authenticator.authenticate(request.headers.get("authorization"))
+            if not authenticator.configured or principal is None:
+                status = 503 if not authenticator.configured else 401
+                code = (
+                    "CATALYST_WORKSPACE_AUTH_UNAVAILABLE"
+                    if status == 503
+                    else "CATALYST_WORKSPACE_AUTHENTICATION_REQUIRED"
+                )
+                title = (
+                    "Workspace service authentication unavailable"
+                    if status == 503
+                    else "Workspace service authentication required"
+                )
+                detail = (
+                    "Workspace service credentials are not configured."
+                    if status == 503
+                    else "A valid Workspace service bearer token is required."
+                )
+                canonical_code = map_catalyst_error(code)["code"]
+                problem = ProblemDetails(
+                    type=f"https://errors.cyrene.dev/catalyst/{canonical_code.lower()}",
+                    title=title,
+                    status=status,
+                    detail=detail,
+                    instance=request.url.path,
+                    code=code,
+                    retryable=status == 503,
+                    trace_id=trace_id,
+                    request_id=request_id,
+                )
+                response = JSONResponse(
+                    status_code=status,
+                    content=problem.model_dump(by_alias=True, exclude_none=True, mode="json"),
+                    media_type="application/problem+json",
+                )
+                if status == 401:
+                    response.headers["WWW-Authenticate"] = "Bearer"
+            else:
+                request.state.workspace_service_principal = principal
+                response = await call_next(request)
+        else:
+            response = await call_next(request)
         response.headers["traceparent"] = f"00-{trace_id}-{span_id}-01"
         response.headers["x-request-id"] = request_id
         return response
@@ -235,6 +291,23 @@ def create_app(
     ) -> Dataset:
         return service.create_dataset(command, idempotency_key)
 
+    @app.post(
+        "/internal/workspace/v1/datasets",
+        response_model=Dataset,
+        response_model_exclude_none=True,
+        status_code=201,
+        include_in_schema=False,
+    )
+    def create_workspace_dataset(
+        request: Request,
+        command: CreateDatasetRequest,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=200),
+    ) -> Dataset:
+        principal = request.state.workspace_service_principal
+        if not isinstance(principal, WorkspaceServicePrincipal):
+            raise RuntimeError("Workspace service principal missing after route authentication")
+        return service.create_workspace_dataset(command, idempotency_key, principal)
+
     @app.get(
         "/api/v1/datasets/{datasetId}",
         response_model=Dataset,
@@ -287,6 +360,18 @@ def create_app(
     )
     def list_datasets() -> list[Dataset]:
         return service.list_datasets()
+
+    @app.get(
+        "/internal/workspace/v1/datasets",
+        response_model=list[Dataset],
+        response_model_exclude_none=True,
+        include_in_schema=False,
+    )
+    def list_workspace_datasets(request: Request) -> list[Dataset]:
+        principal = request.state.workspace_service_principal
+        if not isinstance(principal, WorkspaceServicePrincipal):
+            raise RuntimeError("Workspace service principal missing after route authentication")
+        return service.list_workspace_datasets(principal)
 
     @app.get(
         "/api/v1/datasets/{datasetId}/versions",

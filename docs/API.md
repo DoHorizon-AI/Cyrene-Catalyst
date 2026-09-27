@@ -98,6 +98,27 @@ Platform release.
 | Artifact provider adapter | `WIRED` | Catalyst's replaceable local CAS adapter publishes and verifies provider-neutral `ArtifactRef` values. |
 | Yield handoff | `WIRED_NOT_RUN` | Requires a reachable Yield URL and target Product confirmation. |
 | Echo feedback import | `WIRED_NOT_RUN` | Requires an explicitly selected Echo Artifact and resource reference. |
+
+## Private Workspace service API
+
+The hidden-from-public-OpenAPI routes `/internal/workspace/v1/datasets`
+support service-side list and create operations. The server resolves the
+organization and Workspace from `CYRENE_WORKSPACE_SERVICE_AUTH_JSON`, a
+deployment-injected JSON map containing SHA-256 token digests and fixed scope
+identifiers. Callers send the corresponding high-entropy bearer token; request
+bodies and actor headers cannot select a scope. Invalid configuration prevents
+server startup, while missing configuration leaves private routes unavailable
+with HTTP 503.
+
+New private Datasets are visible only to the matching private token. Existing
+rows stay unscoped, and legacy `/api/v1` reads continue to expose only
+unscoped records. DatasetVersion, Preparation, preview, and export reads
+resolve their parent Dataset before returning data, so a private Dataset's
+descendants do not become available through legacy IDs. The private contract
+is kept separately at
+[`workspace-internal.openapi.yaml`](../contracts/product/v1/workspace-internal.openapi.yaml).
+The caller's deployed secret binding and scope map still require deployment
+and caller-audit evidence.
 ---
 <!-- Chinese Translation / 中文翻译 -->
 
@@ -168,3 +189,18 @@ Catalyst 通过 Plugins SDK 直接调用已解析的 `dataset.preparation.v1` �
 | Artifact provider 适配器 | `WIRED` | Catalyst 可替换的本地 CAS 适配器发布并验证 Provider 无关的 `ArtifactRef` 值。 |
 | Yield 交接 | `WIRED_NOT_RUN` | 需要可访问的 Yield URL 和目标 Product 确认。 |
 | Echo 反馈导入 | `WIRED_NOT_RUN` | 需要显式选中的 Echo Artifact 和资源引用。 |
+
+## 私有 Workspace 服务 API
+
+未公开到 public OpenAPI 的 `/internal/workspace/v1/datasets` 路由支持服务端
+列举和创建。服务端从部署注入的 `CYRENE_WORKSPACE_SERVICE_AUTH_JSON` 读取
+SHA-256 token 摘要及固定 scope 标识，并据此解析组织和 Workspace。调用方只发送
+对应的高熵 Bearer token；请求正文和 actor header 不能选择 scope。配置无效会
+阻止服务启动；缺少配置时私有路由返回 HTTP 503。
+
+新私有 Dataset 仅对匹配的私有 token 可见。现有行继续保持无 scope 状态，
+旧 `/api/v1` 读取仅返回无 scope 记录。DatasetVersion、Preparation、预览和导出
+读取都会先解析父 Dataset，因此不能通过旧 ID 访问私有 Dataset 的后代资源。
+私有契约单独保存在
+[`workspace-internal.openapi.yaml`](../contracts/product/v1/workspace-internal.openapi.yaml)。
+部署 secret 绑定和调用方 scope map 仍需部署及 caller-audit 证据。

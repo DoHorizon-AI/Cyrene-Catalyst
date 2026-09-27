@@ -27,6 +27,8 @@ jobs:
       AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
       AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
       AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      WORKSPACE_SERVICE_AUTH_SECRET_URI: ${{ vars.WORKSPACE_SERVICE_AUTH_SECRET_URI }}
+      WORKSPACE_SERVICE_AUTH_IDENTITY: ${{ vars.WORKSPACE_SERVICE_AUTH_IDENTITY }}
 
     steps:
       - name: Require Azure OIDC configuration
@@ -37,6 +39,16 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Keep Workspace auth rollout disabled pending conditional ACA updates
+        shell: bash
+        run: |
+          if [[ -z "$WORKSPACE_SERVICE_AUTH_SECRET_URI" && -z "$WORKSPACE_SERVICE_AUTH_IDENTITY" ]]; then
+            echo "Workspace auth variables are unset; continuing with the original image-only deployment."
+            exit 0
+          fi
+          echo "Automated Workspace auth promotion is disabled because ACA updates have no documented conditional ETag guard. Keep both auth variables unset for image-only deployments; follow the reviewed manual deployment procedure in docs/operations/ACA_WORKSPACE_SERVICE_AUTH.md." >&2
+          exit 1
 
       - name: Checkout Cyrene-Catalyst
         uses: actions/checkout@v5

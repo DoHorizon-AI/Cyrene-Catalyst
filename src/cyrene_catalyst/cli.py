@@ -22,6 +22,10 @@ import httpx
 import uvicorn
 
 from cyrene_catalyst.api import create_app
+from cyrene_catalyst.workspace_auth import (
+    WorkspaceServiceAuthConfigError,
+    WorkspaceServiceAuthenticator,
+)
 
 
 def _base_url(value: str) -> str:
@@ -52,10 +56,17 @@ def _call(client: httpx.Client, method: str, path: str, **kwargs: Any) -> dict[s
 def _serve(arguments: argparse.Namespace) -> int:
     base = arguments.home.expanduser()
     base.mkdir(parents=True, exist_ok=True)
+    try:
+        workspace_authenticator = WorkspaceServiceAuthenticator.from_json(
+            os.environ.get("CYRENE_WORKSPACE_SERVICE_AUTH_JSON")
+        )
+    except WorkspaceServiceAuthConfigError as exc:
+        raise SystemExit(str(exc)) from exc
     app = create_app(
         database_path=base / "catalyst.sqlite3",
         artifact_root=arguments.artifact_root or base / "artifacts",
         yield_url=arguments.yield_url,
+        workspace_authenticator=workspace_authenticator,
     )
     uvicorn.run(app, host=arguments.host, port=arguments.port, access_log=False)
     return 0

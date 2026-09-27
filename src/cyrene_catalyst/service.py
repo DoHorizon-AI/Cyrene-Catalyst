@@ -51,6 +51,7 @@ from cyrene_catalyst.engine import (
 )
 from cyrene_catalyst.errors import CatalystError, DataEngineFailure
 from cyrene_catalyst.store import CatalystStore
+from cyrene_catalyst.workspace_auth import WorkspaceServicePrincipal
 
 PREPARATION_ENGINE_BINDING_ID = "catalyst-prep-v1"
 MAX_IMPORT_BYTES = 64 * 1024 * 1024
@@ -242,6 +243,30 @@ class CatalystService:
         )
         return dataset
 
+    def create_workspace_dataset(
+        self,
+        command: CreateDatasetRequest,
+        idempotency_key: str | None,
+        principal: WorkspaceServicePrincipal,
+    ) -> Dataset:
+        """Create or replay a Dataset inside the authenticated Workspace scope."""
+
+        now = utc_now()
+        dataset = Dataset(
+            id=uuid4(),
+            name=command.name,
+            description=command.description,
+            created_at=now,
+            updated_at=now,
+            resource_version=1,
+        )
+        return self.store.create_workspace_dataset(
+            dataset,
+            principal,
+            idempotency_key,
+            request_hash(command),
+        )
+
     def get_dataset(self, dataset_id: UUID) -> Dataset:
         """Read a Dataset or raise a stable not-found error. | 读取 Dataset。"""
 
@@ -355,6 +380,7 @@ class CatalystService:
         # 中文:按最新优先顺序列出一个 Dataset 的 DatasetVersion。此操作供控制台 UI 提供版本选择器,
         # 避免要求用户手动粘贴 UUID。
 
+        self.get_dataset(dataset_id)
         return self.store.list_versions(dataset_id)
 
     def preview_version(
@@ -444,6 +470,11 @@ class CatalystService:
         """List Datasets for the UI. | 列出 Dataset。"""
 
         return self.store.list_datasets()
+
+    def list_workspace_datasets(self, principal: WorkspaceServicePrincipal) -> list[Dataset]:
+        """List only Datasets assigned to the authenticated Workspace scope."""
+
+        return self.store.list_datasets(principal)
 
     def list_preparations(self, dataset_id: UUID) -> list[Preparation]:
         """List Datasets for the UI. | 列出整理会话。"""
