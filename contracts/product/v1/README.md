@@ -104,3 +104,14 @@ HTTP 接口根路径为 `/api/v1`，并采用 Workspace 的 `product-http-v1` �
 `DatasetVersion`：`PROCESSING -> PUBLISHED | FAILED`。已发布或失败的版本均不可变。重试会创建新版本和新的沿袭记录。
 
 MVP 刻意采用同步执行并返回 `201`。未来的异步适配器可以遵循 RFC 7240 的 `Prefer: respond-async`，并返回 `202`，其中 `Location` 指向 Product 所有的 DatasetVersion。不得暴露或创建第二套 Kernel Operation API。
+
+## Product operation catalog v2
+
+This Product publishes its Workspace operation catalog at
+[../v2/catalog.json](../v2/catalog.json). Each listed operation binds its exact
+owner operationId to the corresponding OpenAPI source and schema pointers.
+The release manifest pins the catalog and its complete OpenAPI reference closure
+to the same repository commit. This catalog declares operation contracts only;
+Workspace policy controls access independently.
+
+本 Product 在 [../v2/catalog.json](../v2/catalog.json) 发布 Workspace 操作目录。每个目录项都将准确的 owner operationId 绑定到对应的 OpenAPI 文档和 schema pointer。发布清单会将目录及其完整 OpenAPI 引用闭包固定到同一仓库提交。目录只声明操作契约；访问权限由独立的 Workspace policy 控制。
