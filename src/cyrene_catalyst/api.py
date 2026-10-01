@@ -77,6 +77,7 @@ def create_app(
     app = FastAPI(title="Cyrene Catalyst Product API", version="1.0.0")
     app.state.catalyst_store = store
     app.state.catalyst_service = service
+    app.router.on_shutdown.append(service.close)
     app.state.workspace_authenticator = (
         workspace_authenticator or WorkspaceServiceAuthenticator.from_json(None)
     )

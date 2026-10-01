@@ -50,6 +50,7 @@ from cyrene_catalyst.engine import (
     _has_parquet_magic,
 )
 from cyrene_catalyst.errors import CatalystError, DataEngineFailure
+from cyrene_catalyst.runtime_activity import start_activity_source
 from cyrene_catalyst.store import CatalystStore
 from cyrene_catalyst.workspace_auth import WorkspaceServicePrincipal
 
@@ -208,6 +209,10 @@ class CatalystService:
         self.store = store
         self.artifacts = artifacts
         self.engine = engine
+        self.activity = start_activity_source(
+            "cyrene-catalyst",
+            self.store.list_active_activity_tasks,
+        )
 
     def create_dataset(self, command: CreateDatasetRequest, idempotency_key: str | None) -> Dataset:
         """Create or idempotently replay a Dataset. | 创建或幂等重放 Dataset。"""
@@ -307,7 +312,14 @@ class CatalystService:
             updated_at=now,
             resource_version=1,
         )
-        self.store.save_version(version)
+        if self.activity is None:
+            self.store.save_version(version)
+        else:
+            self.activity.admit_and_persist(
+                str(version.id),
+                lambda: self.store.save_version(version),
+                state="ACCEPTED",
+            )
         self.store.remember_idempotency(
             scope=scope,
             key=idempotency_key,
@@ -315,6 +327,8 @@ class CatalystService:
             resource_kind="dataset-version",
             resource_id=version.id,
         )
+        if self.activity is not None:
+            self.activity.transition_and_persist(str(version.id), "RUNNING", lambda: None)
         staged_path = self.artifacts.stage_path(f"{version.id}.parquet")
         try:
             source_path = self.artifacts.resolve(command.source)
@@ -334,7 +348,13 @@ class CatalystService:
                     "resource_version": 2,
                 }
             )
-            self.store.save_version(failed)
+            if self.activity is None:
+                self.store.save_version(failed)
+            else:
+                self.activity.complete_after_persist(
+                    str(version.id),
+                    lambda: self.store.save_version(failed),
+                )
             raise error from exc
         finally:
             staged_path.unlink(missing_ok=True)
@@ -352,8 +372,20 @@ class CatalystService:
                 "resource_version": 2,
             }
         )
-        self.store.save_version(published)
+        if self.activity is None:
+            self.store.save_version(published)
+        else:
+            self.activity.complete_after_persist(
+                str(version.id),
+                lambda: self.store.save_version(published),
+            )
         return published
+
+    def close(self) -> None:
+        """Stop the activity heartbeat during orderly application shutdown."""
+
+        if self.activity is not None:
+            self.activity.close()
 
     def get_version(self, version_id: UUID) -> DatasetVersion:
         """Read a published or failed DatasetVersion. | 读取已发布或失败版本。"""
