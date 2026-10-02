@@ -361,6 +361,24 @@ class CatalystStore:
             ).fetchall()
         return [DatasetVersion.model_validate_json(row["document"]) for row in rows]
 
+    def list_active_activity_tasks(self) -> list[dict[str, str]]:
+        """Return processing DatasetVersions for startup gate reconciliation.
+
+        Product states remain authoritative; the runtime gate receives only a
+        separate RUNNING activity projection.
+        """
+
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT document FROM dataset_versions ORDER BY rowid"
+            ).fetchall()
+        versions = [DatasetVersion.model_validate_json(row["document"]) for row in rows]
+        return [
+            {"task_id": str(version.id), "state": "RUNNING"}
+            for version in versions
+            if version.state.value == "PROCESSING"
+        ]
+
     def resolve_idempotency(
         self,
         scope: str,
