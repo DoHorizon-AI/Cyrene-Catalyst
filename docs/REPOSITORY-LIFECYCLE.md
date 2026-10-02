@@ -46,7 +46,7 @@ clean-root 源码内容将在无父 `main` 根提交处成为公开规范历史�
 - **CI Authority**: `github` (GitHub Actions owns automatic source and contract checks)
 - **Release Role**: `COMPONENT_RELEASE`
 - **Release Authority**: `github_releases`
-- **Deployment Authority**: `dohorizon_azure` (manual/internal only in this repository)
+- **Deployment Authority**: `dohorizon_azure` (verified immutable component OCI digest; updates an existing app only)
 - **Distribution Profiles**: `dialogue_ext`
 
 ---
@@ -56,7 +56,26 @@ clean-root 源码内容将在无父 `main` 根提交处成为公开规范历史�
 - **Live hosting state**: The GitHub repository is public.
 - **Dependency boundary**: The pinned Plugins revision is public and immutable; its package metadata does not yet grant a license, so binary publication remains blocked.
 - **Product boundary**: Catalyst owns its replaceable local Artifact Plane adapter and exchanges only provider-neutral `ArtifactRef` values. Product payloads and engine calls stay within Catalyst or use direct Product/Plugin handoffs.
-- **Internal / Delivery Maintainer**: Azure DevOps is reserved for manual deployment or private integration work; it is not the automatic source CI authority.
+- **Internal / Delivery Maintainer**: Azure DevOps remains for manual or private integration work; GitHub Actions is the automatic source CI authority and verified OCI digest consumer.
+
+### Immutable component delivery / 不可变组件交付
+
+The `Immutable component release` workflow publishes Catalyst artifacts for the
+exact source commit. The Azure Container Apps workflow waits for a successful
+same-repository release run, resolves that commit's stable or preview index,
+and verifies the pinned Workspace catalog, manifest, OCI digest, and GitHub
+attestation before updating `cyrene-catalyst`. Manual dispatch uses the current
+branch and commit and follows the same checks. The deployment does not build or
+push an image and does not create an Azure app. It preserves the existing
+Azure OIDC and Workspace-auth rollout gates and verifies the healthy internal
+revision against the selected immutable image digest.
+
+`Immutable component release` workflow 会为精确源码提交发布 Catalyst 组件产物。Azure
+Container Apps workflow 只响应同仓库成功的发布运行，按该提交查找 stable 或 preview
+index，并在更新 `cyrene-catalyst` 前验证固定 Workspace catalog、manifest、OCI digest 与
+GitHub attestation。手动触发会使用当前分支和提交并执行相同校验。部署流程不会构建或推送
+镜像，也不会创建 Azure app；现有 Azure OIDC 与 Workspace auth rollout 门禁保持不变，且会
+验证内网健康 revision 正在使用所选不可变镜像 digest。
 
 ## 5. Public release readiness / 公开发布准备度
 
