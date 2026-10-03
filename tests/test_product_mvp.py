@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -22,22 +21,19 @@ from openapi_spec_validator.readers import read_from_filename
 from referencing import Registry, Resource
 
 from cyrene_catalyst import create_app
-from cyrene_catalyst.artifacts import sha256_file
+from cyrene_catalyst.artifacts import LocalArtifactPlane
 from cyrene_catalyst.domain import ArtifactRef
 
 
 def _artifact(path: Path, artifact_root: Path) -> dict[str, Any]:
-    digest = sha256_file(path)
-    digest_hex = digest.removeprefix("sha256:")
-    objects = artifact_root / "sha256"
-    objects.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(path, objects / digest_hex)
-    return {
-        "uri": f"artifact://sha256/{digest_hex}",
-        "digest": digest,
-        "size_bytes": path.stat().st_size,
-        "kind": "dataset",
-    }
+    """Publish through the shared Platform artifact plane the Product uses.
+
+    中文:通过 Product 共用的 Platform artifact plane 发布。
+    """
+    # 中文:通过 Product 使用的共享 Platform 制品平面发布。
+
+    reference = LocalArtifactPlane(artifact_root).publish(path, "dataset")
+    return reference.model_dump(exclude_none=True)
 
 
 def _close(app: Any) -> None:
@@ -124,8 +120,9 @@ def test_duckdb_publish_idempotency_and_restart(tmp_path: Path) -> None:
         assert replay.status_code == 201
         assert replay.json()["id"] == version["id"]
 
-    output_digest = version["output"]["digest"].removeprefix("sha256:")
-    parquet_path = artifact_root / "sha256" / output_digest
+    parquet_path = LocalArtifactPlane(artifact_root).resolve(
+        ArtifactRef.model_validate(version["output"])
+    )
     assert parquet_path.is_file()
     with duckdb.connect() as connection:
         count = connection.execute(

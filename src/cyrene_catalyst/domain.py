@@ -57,6 +57,8 @@ class ImportFormat(StrEnum):
     JSONL = "JSONL"
     JSON = "JSON"
     TEXT = "TEXT"
+    CSV = "CSV"
+    PARQUET = "PARQUET"
 
 
 class PreparationState(StrEnum):
@@ -84,6 +86,7 @@ class ArtifactRef(ContractModel):
     size_bytes: int = Field(ge=0)
     # Artifact kind is an opaque producer-owned category. The wire contract
     # validates its shape but deliberately does not publish a Product vocabulary.
+    # 中文:制品类型是由生产方拥有的不透明类别。线协议会校验其形态,但刻意不发布 Product 词汇表。
     kind: str = Field(min_length=1, max_length=128)
     manifest_digest: str | None = Field(
         default=None,
@@ -167,6 +170,8 @@ class ProblemDetails(ContractModel):
     retryable: bool
     trace_id: str
     resource_ref: str | None = None
+    request_id: str | None = None
+    recovery_action: str | None = None
 
 
 class EngineResult(ContractModel):
@@ -253,10 +258,15 @@ class SplitStats(ContractModel):
 class ExportFile(ContractModel):
     """One downloadable standard export inside a bundle. | 导出包内文件。"""
 
-    name: str = Field(pattern=r"^[a-z0-9_-]+\.(jsonl|json)$")
+    name: str = Field(pattern=r"^[a-z0-9_-]+\.(jsonl|json|csv|parquet)$")
     artifact: ArtifactRef
     row_count: int | None = Field(default=None, ge=0)
-    media_type: Literal["application/jsonl", "application/json"]
+    media_type: Literal[
+        "application/jsonl",
+        "application/json",
+        "text/csv",
+        "application/vnd.apache.parquet",
+    ]
 
 
 class Preparation(ContractModel):
@@ -340,3 +350,29 @@ class PublishPreparationResponse(ContractModel):
 
     preparation: Preparation
     dataset_version: DatasetVersion
+
+
+class PreviewRow(ContractModel):
+    """One row in the dataset version preview.
+
+    中文:数据集版本预览中的一行。
+    """
+
+    # 中文:数据集版本预览中的一行。
+
+    index: int = Field(ge=0)
+    mapped: dict[str, Any]
+    raw: dict[str, Any]
+
+
+class DatasetPreview(ContractModel):
+    """Paginated dataset version preview with mapped and raw fields.
+
+    中文:包含映射结果和原始字段的数据集版本分页预览。
+    """
+
+    # 中文:包含映射字段和原始字段的分页数据集版本预览。
+
+    version_id: UUID
+    total_rows: int = Field(ge=0)
+    rows: list[PreviewRow]

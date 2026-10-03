@@ -1,0 +1,54 @@
+openapi: 3.1.2
+x-cyrene-contract-profile: product-workspace-private-http-v1
+info:
+  title: Cyrene Catalyst Workspace Private API
+  version: 1.0.0
+  description: >-
+    Server-to-server Workspace projections. Workspace identity is resolved
+    from the configured bearer-token digest map and is never accepted from a
+    request body or caller-supplied actor header.
+servers:
+  - url: /
+paths:
+  /internal/workspace/v1/datasets:
+    get:
+      operationId: workspaceListDatasets
+      security:
+        - WorkspaceServiceBearer: []
+      responses:
+        '200':
+          description: Datasets belonging to the token's configured organization and Workspace
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: './openapi.yaml#/components/schemas/Dataset'}
+        '401': {$ref: './openapi.yaml#/components/responses/Problem'}
+        '503': {$ref: './openapi.yaml#/components/responses/Problem'}
+    post:
+      operationId: workspaceCreateDataset
+      security:
+        - WorkspaceServiceBearer: []
+      parameters:
+        - $ref: './openapi.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: './openapi.yaml#/components/schemas/CreateDatasetRequest'}
+      responses:
+        '201':
+          description: Dataset created or idempotently replayed in the token's configured Workspace
+          content:
+            application/json:
+              schema: {$ref: './openapi.yaml#/components/schemas/Dataset'}
+        '401': {$ref: './openapi.yaml#/components/responses/Problem'}
+        '409': {$ref: './openapi.yaml#/components/responses/Problem'}
+        '422': {$ref: './openapi.yaml#/components/responses/Problem'}
+        '503': {$ref: './openapi.yaml#/components/responses/Problem'}
+components:
+  securitySchemes:
+    WorkspaceServiceBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque service token

@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated, Literal
@@ -28,6 +27,7 @@ from cyrene_catalyst.domain import (
     CreateDatasetRequest,
     CreateDatasetVersionRequest,
     Dataset,
+    DatasetPreview,
     DatasetVersion,
     ErrorPreview,
     NormalizedPreview,
@@ -37,24 +37,25 @@ from cyrene_catalyst.domain import (
     RawPreview,
 )
 from cyrene_catalyst.engine import DataPreparationPort, data_preparation_from_environment
-from cyrene_catalyst.errors import CatalystError
+from cyrene_catalyst.errors import CatalystError, DataEngineFailure, map_catalyst_error
 from cyrene_catalyst.lifecycle import (
     FeedbackImportRequest,
     HandoffReceipt,
     LifecycleActions,
 )
+from cyrene_catalyst.logging import (
+    emit_diagnostic_error,
+    parse_w3c_traceparent,
+    sanitize_request_id,
+)
 from cyrene_catalyst.service import CatalystService
 from cyrene_catalyst.store import CatalystStore
+from cyrene_catalyst.workspace_auth import (
+    WorkspaceServiceAuthenticator,
+    WorkspaceServicePrincipal,
+)
 
-_TRACEPARENT = re.compile(r"^00-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}$")
 _UI_HTML = (Path(__file__).parent / "ui" / "index.html").read_text(encoding="utf-8")
-
-
-def _incoming_trace_id(value: str) -> str | None:
-    match = _TRACEPARENT.fullmatch(value)
-    if match is None or match.group(1) == "0" * 32 or match.group(2) == "0" * 16:
-        return None
-    return match.group(1)
 
 
 def create_app(
@@ -63,6 +64,7 @@ def create_app(
     artifact_root: Path,
     engine: DataPreparationPort | None = None,
     yield_url: str | None = None,
+    workspace_authenticator: WorkspaceServiceAuthenticator | None = None,
 ) -> FastAPI:
     """Build an app with explicit durable adapters. | 使用显式持久化适配器创建应用。"""
 
@@ -75,31 +77,124 @@ def create_app(
     app = FastAPI(title="Cyrene Catalyst Product API", version="1.0.0")
     app.state.catalyst_store = store
     app.state.catalyst_service = service
+    app.router.on_shutdown.append(service.close)
+    app.state.workspace_authenticator = (
+        workspace_authenticator or WorkspaceServiceAuthenticator.from_json(None)
+    )
     lifecycle = LifecycleActions(service, yield_url)
     app.state.lifecycle_actions = lifecycle
+
+    @app.get("/healthz", include_in_schema=False)
+    def healthz() -> dict[str, str]:
+        """Report process liveness to the container orchestrator. | 向容器编排器报告进程存活。"""
+
+        return {"status": "ok"}
 
     @app.middleware("http")
     async def propagate_trace(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        trace_id = _incoming_trace_id(request.headers.get("traceparent", "")) or uuid4().hex
+        parsed_trace = parse_w3c_traceparent(request.headers.get("traceparent"))
+        if parsed_trace:
+            trace_id, span_id = parsed_trace
+        else:
+            trace_id = uuid4().hex
+            span_id = "0000000000000001"
+
+        raw_req_id = request.headers.get("x-request-id")
+        request_id = sanitize_request_id(raw_req_id) or f"req-{uuid4().hex[:12]}"
+
         request.state.trace_id = trace_id
-        response = await call_next(request)
-        response.headers["traceparent"] = f"00-{trace_id}-0000000000000001-01"
+        request.state.span_id = span_id
+        request.state.request_id = request_id
+
+        response: Response
+        private_routes = {
+            ("GET", "/internal/workspace/v1/datasets"),
+            ("POST", "/internal/workspace/v1/datasets"),
+        }
+        if (request.method, request.url.path) in private_routes:
+            authenticator: WorkspaceServiceAuthenticator = app.state.workspace_authenticator
+            principal = authenticator.authenticate(request.headers.get("authorization"))
+            if not authenticator.configured or principal is None:
+                status = 503 if not authenticator.configured else 401
+                code = (
+                    "CATALYST_WORKSPACE_AUTH_UNAVAILABLE"
+                    if status == 503
+                    else "CATALYST_WORKSPACE_AUTHENTICATION_REQUIRED"
+                )
+                title = (
+                    "Workspace service authentication unavailable"
+                    if status == 503
+                    else "Workspace service authentication required"
+                )
+                detail = (
+                    "Workspace service credentials are not configured."
+                    if status == 503
+                    else "A valid Workspace service bearer token is required."
+                )
+                canonical_code = map_catalyst_error(code)["code"]
+                problem = ProblemDetails(
+                    type=f"https://errors.cyrene.dev/catalyst/{canonical_code.lower()}",
+                    title=title,
+                    status=status,
+                    detail=detail,
+                    instance=request.url.path,
+                    code=code,
+                    retryable=status == 503,
+                    trace_id=trace_id,
+                    request_id=request_id,
+                )
+                response = JSONResponse(
+                    status_code=status,
+                    content=problem.model_dump(by_alias=True, exclude_none=True, mode="json"),
+                    media_type="application/problem+json",
+                )
+                if status == 401:
+                    response.headers["WWW-Authenticate"] = "Bearer"
+            else:
+                request.state.workspace_service_principal = principal
+                response = await call_next(request)
+        else:
+            response = await call_next(request)
+        response.headers["traceparent"] = f"00-{trace_id}-{span_id}-01"
+        response.headers["x-request-id"] = request_id
         return response
 
     @app.exception_handler(CatalystError)
     async def product_error(request: Request, exc: CatalystError) -> JSONResponse:
+        mapping = map_catalyst_error(exc.code)
+        canonical_code = mapping["code"]
+        trace_id = getattr(request.state, "trace_id", None) or uuid4().hex
+        span_id = getattr(request.state, "span_id", "0000000000000001")
+        request_id = getattr(request.state, "request_id", None)
+        emit_diagnostic_error(
+            "catalyst.error",
+            canonical_code,
+            f"{exc.title}: {exc.detail}",
+            trace_id=trace_id,
+            span_id=span_id,
+            attributes={
+                "http.target": request.url.path,
+                "http.status_code": exc.status,
+                "request_id": request_id,
+                "cause_kind": mapping.get("cause_kind"),
+                "recovery_action": mapping.get("recovery_action"),
+                "legacy_code": exc.code,
+            },
+        )
         problem = ProblemDetails(
-            type=f"https://errors.cyrene.dev/catalyst/{exc.code.lower()}",
+            type=f"https://errors.cyrene.dev/catalyst/{canonical_code.lower()}",
             title=exc.title,
             status=exc.status,
             detail=exc.detail,
             instance=request.url.path,
             code=exc.code,
             retryable=exc.retryable,
-            trace_id=request.state.trace_id,
+            trace_id=trace_id,
             resource_ref=exc.resource_ref,
+            request_id=request_id,
+            recovery_action=mapping.get("recovery_action"),
         )
         return JSONResponse(
             status_code=exc.status,
@@ -107,8 +202,66 @@ def create_app(
             media_type="application/problem+json",
         )
 
+    @app.exception_handler(DataEngineFailure)
+    async def engine_error(request: Request, _exc: DataEngineFailure) -> JSONResponse:
+        mapping = map_catalyst_error("CATALYST_DATA_PROCESSING_FAILED")
+        canonical_code = mapping["code"]
+        trace_id = getattr(request.state, "trace_id", None) or uuid4().hex
+        span_id = getattr(request.state, "span_id", "0000000000000001")
+        request_id = getattr(request.state, "request_id", None)
+        emit_diagnostic_error(
+            "catalyst.engine_failure",
+            canonical_code,
+            "The dataset preparation engine rejected the requested data or schema.",
+            trace_id=trace_id,
+            span_id=span_id,
+            attributes={
+                "http.target": request.url.path,
+                "http.status_code": 422,
+                "request_id": request_id,
+                "cause_kind": mapping.get("cause_kind"),
+                "recovery_action": mapping.get("recovery_action"),
+            },
+        )
+        problem = ProblemDetails(
+            type="https://errors.cyrene.dev/catalyst/data-processing-failed",
+            title="Data processing failed",
+            status=422,
+            detail="The dataset preparation engine rejected the requested data or schema.",
+            instance=request.url.path,
+            code="CATALYST_DATA_PROCESSING_FAILED",
+            retryable=False,
+            trace_id=trace_id,
+            request_id=request_id,
+            recovery_action=mapping.get("recovery_action"),
+        )
+        return JSONResponse(
+            status_code=422,
+            content=problem.model_dump(by_alias=True, mode="json"),
+            media_type="application/problem+json",
+        )
+
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, _exc: RequestValidationError) -> JSONResponse:
+        mapping = map_catalyst_error("CATALYST_REQUEST_INVALID")
+        canonical_code = mapping["code"]
+        trace_id = getattr(request.state, "trace_id", None) or uuid4().hex
+        span_id = getattr(request.state, "span_id", "0000000000000001")
+        request_id = getattr(request.state, "request_id", None)
+        emit_diagnostic_error(
+            "catalyst.validation_error",
+            canonical_code,
+            "The request does not conform to the Catalyst Product API v1 contract.",
+            trace_id=trace_id,
+            span_id=span_id,
+            attributes={
+                "http.target": request.url.path,
+                "http.status_code": 422,
+                "request_id": request_id,
+                "cause_kind": mapping.get("cause_kind"),
+                "recovery_action": mapping.get("recovery_action"),
+            },
+        )
         problem = ProblemDetails(
             type="https://errors.cyrene.dev/catalyst/request-invalid",
             title="Request validation failed",
@@ -117,7 +270,9 @@ def create_app(
             instance=request.url.path,
             code="CATALYST_REQUEST_INVALID",
             retryable=False,
-            trace_id=request.state.trace_id,
+            trace_id=trace_id,
+            request_id=request_id,
+            recovery_action=mapping.get("recovery_action"),
         )
         return JSONResponse(
             status_code=422,
@@ -136,6 +291,23 @@ def create_app(
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=200),
     ) -> Dataset:
         return service.create_dataset(command, idempotency_key)
+
+    @app.post(
+        "/internal/workspace/v1/datasets",
+        response_model=Dataset,
+        response_model_exclude_none=True,
+        status_code=201,
+        include_in_schema=False,
+    )
+    def create_workspace_dataset(
+        request: Request,
+        command: CreateDatasetRequest,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=200),
+    ) -> Dataset:
+        principal = request.state.workspace_service_principal
+        if not isinstance(principal, WorkspaceServicePrincipal):
+            raise RuntimeError("Workspace service principal missing after route authentication")
+        return service.create_workspace_dataset(command, idempotency_key, principal)
 
     @app.get(
         "/api/v1/datasets/{datasetId}",
@@ -166,6 +338,18 @@ def create_app(
     def get_version(version_id: Annotated[UUID, ApiPath(alias="versionId")]) -> DatasetVersion:
         return service.get_version(version_id)
 
+    @app.get(
+        "/api/v1/dataset-versions/{versionId}/preview",
+        response_model=DatasetPreview,
+        response_model_exclude_none=True,
+    )
+    def preview_version(
+        version_id: Annotated[UUID, ApiPath(alias="versionId")],
+        limit: Annotated[int, Query(ge=1, le=100)] = 10,
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> DatasetPreview:
+        return service.preview_version(version_id, limit=limit, offset=offset)
+
     @app.get("/", include_in_schema=False, response_class=HTMLResponse)
     def root_ui() -> HTMLResponse:
         return HTMLResponse(_UI_HTML)
@@ -177,6 +361,28 @@ def create_app(
     )
     def list_datasets() -> list[Dataset]:
         return service.list_datasets()
+
+    @app.get(
+        "/internal/workspace/v1/datasets",
+        response_model=list[Dataset],
+        response_model_exclude_none=True,
+        include_in_schema=False,
+    )
+    def list_workspace_datasets(request: Request) -> list[Dataset]:
+        principal = request.state.workspace_service_principal
+        if not isinstance(principal, WorkspaceServicePrincipal):
+            raise RuntimeError("Workspace service principal missing after route authentication")
+        return service.list_workspace_datasets(principal)
+
+    @app.get(
+        "/api/v1/datasets/{datasetId}/versions",
+        response_model=list[DatasetVersion],
+        response_model_exclude_none=True,
+    )
+    def list_versions(
+        dataset_id: Annotated[UUID, ApiPath(alias="datasetId")],
+    ) -> list[DatasetVersion]:
+        return service.list_versions(dataset_id)
 
     @app.get(
         "/api/v1/datasets/{datasetId}/preparations",
@@ -208,6 +414,7 @@ def create_app(
             filename=filename,
             data=data,
             idempotency_key=idempotency_key,
+            content_type=request.headers.get("content-type"),
         )
 
     @app.get(

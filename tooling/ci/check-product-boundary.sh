@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Catalyst owns its local Artifact Plane adapter.  This guard keeps future
-# changes from silently reintroducing a Platform source checkout, Python SDK,
-# environment bridge, or closed ArtifactKind vocabulary.
+# Catalyst may use the pinned Platform Artifact SDK only inside its adapter.
+# This guard rejects Product-wide SDK leakage, environment bridges, closed
+# ArtifactKind vocabularies outside that adapter, and concrete data processing.
 guard_path='tooling/ci/check-product-boundary.sh'
 violations=0
 
@@ -18,11 +18,27 @@ check_matches() {
   fi
 }
 
-check_matches 'Platform git/source checkout' 'Cyrene-Platform[.]git'
-check_matches 'Platform artifact SDK/package' 'cyrene-artifacts|cy_artifacts'
+check_matches_outside() {
+  local label=$1
+  local pattern=$2
+  local allowed_paths=$3
+  local matches
+  matches="$(git grep -n -i -E "$pattern" -- ":!$guard_path" \
+    | grep -E -v "^(${allowed_paths}):" || true)"
+  if [[ -n "$matches" ]]; then
+    printf 'Boundary violation (%s):\n%s\n' "$label" "$matches" >&2
+    violations=1
+  fi
+}
+
+check_matches_outside 'Platform git/source checkout' 'Cyrene-Platform[.]git' \
+  'pyproject[.]toml|uv[.]lock'
+check_matches_outside 'Platform artifact SDK/package' 'cyrene-artifacts|cy_artifacts' \
+  'pyproject[.]toml|uv[.]lock|src/cyrene_catalyst/artifacts[.]py'
 check_matches 'Platform environment bridge' 'CYRENE_PLATFORM'
-check_matches 'closed ArtifactKind code vocabulary' \
-  'ArtifactKind[[:space:]]*(::|[.])|class[[:space:]]+ArtifactKind|enum[[:space:]]+ArtifactKind'
+check_matches_outside 'closed ArtifactKind code vocabulary' \
+  'ArtifactKind[[:space:]]*(::|[.])|class[[:space:]]+ArtifactKind|enum[[:space:]]+ArtifactKind' \
+  'src/cyrene_catalyst/artifacts[.]py'
 
 if [[ -e src/cyrene_catalyst/preparation.py ]]; then
   printf 'Boundary violation: local dataset preparation implementation was reintroduced.\n' >&2
