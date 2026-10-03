@@ -397,6 +397,7 @@ jobs:
           if not published:
               raise SystemExit("owner release did not reach an exact immutable published state")
           print(f"Published immutable owner release {release_id} for source {source_commit} and run attempt {run_attempt}")
+          PY
 
           immutable="$(gh api "repos/$SOURCE_REPOSITORY/releases/tags/$RELEASE_TAG" --jq .immutable)"
           if [[ "$immutable" != true ]]; then
