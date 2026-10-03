@@ -132,11 +132,272 @@ jobs:
           owner_id="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["ownerId"])' "$PUBLICATION_ROOT/owner-publication-v1.json")"
           cp "$PUBLICATION_ROOT/attestations/owners/${owner_id}.jsonl" "$asset_dir/product-catalog-v2.attestation.jsonl"
           cp "$PUBLICATION_ROOT/owner-publication-v1.json" "$asset_dir/owner-publication-v1.json"
-          release_args=("$RELEASE_TAG" "$asset_dir/product-catalog-v2.json" "$asset_dir/product-catalog-v2.attestation.jsonl" "$asset_dir/owner-publication-v1.json" --draft --target "$SOURCE_COMMIT" --title "Product catalog v2 $RELEASE_CHANNEL $SOURCE_COMMIT" --notes "Owner-published Product catalog and detached GitHub artifact attestation for $SOURCE_REPOSITORY@$SOURCE_COMMIT ($SOURCE_REF).")
-          if [[ "$RELEASE_CHANNEL" == preview ]]; then release_args+=(--prerelease); fi
-          gh release create "${release_args[@]}"
-          release_id="$(gh release view "$RELEASE_TAG" --repo "$SOURCE_REPOSITORY" --json databaseId --jq .databaseId)"
-          gh api --method PATCH "repos/$SOURCE_REPOSITORY/releases/$release_id" -F draft=false >/dev/null
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          import time
+          from pathlib import Path
+
+          repository = os.environ["SOURCE_REPOSITORY"]
+          source_ref = os.environ["SOURCE_REF"]
+          source_commit = os.environ["SOURCE_COMMIT"]
+          run_id = os.environ["RUN_ID"]
+          run_attempt = int(os.environ["RUN_ATTEMPT"])
+          release_tag = os.environ["RELEASE_TAG"]
+          channel = os.environ["RELEASE_CHANNEL"]
+          asset_dir = Path(os.environ["RUNNER_TEMP"]) / "product-contract-assets"
+          files = {
+              "product-catalog-v2.json": asset_dir / "product-catalog-v2.json",
+              "product-catalog-v2.attestation.jsonl": asset_dir / "product-catalog-v2.attestation.jsonl",
+              "owner-publication-v1.json": asset_dir / "owner-publication-v1.json",
+          }
+          release_fields = "databaseId,tagName,targetCommitish,isDraft,isPrerelease,isImmutable,assets"
+
+          class GitHubUnavailable(RuntimeError):
+              pass
+
+          def run_gh(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+              return subprocess.run(["gh", *arguments], capture_output=True, text=True, check=False)
+
+          def has_server_error(output: str) -> bool:
+              return re.search(r"\bHTTP\s+5\d\d\b", output, re.IGNORECASE) is not None
+
+          def run_error(context: str, result: subprocess.CompletedProcess[str]) -> str:
+              output = f"{result.stdout}\n{result.stderr}"
+              match = re.search(r"\bHTTP\s+([45]\d\d)\b", output, re.IGNORECASE)
+              status = match.group(1) if match else f"exit {result.returncode}"
+              return f"{context} failed with {status}"
+
+          def read_release_once() -> dict[str, object] | None:
+              result = run_gh(
+                  ["release", "view", release_tag, "--repo", repository, "--json", release_fields]
+              )
+              if result.returncode == 0:
+                  try:
+                      release = json.loads(result.stdout)
+                  except json.JSONDecodeError as error:
+                      raise SystemExit("GitHub release readback was not valid JSON") from error
+                  if not isinstance(release, dict):
+                      raise SystemExit("GitHub release readback was not an object")
+                  return release
+              output = f"{result.stdout}\n{result.stderr}"
+              lowered = output.lower()
+              if "release not found" in lowered or "http 404" in lowered:
+                  return None
+              if has_server_error(output):
+                  raise GitHubUnavailable(run_error("GitHub release readback", result))
+              raise SystemExit(run_error("GitHub release readback", result))
+
+          def read_release(*, wait_for_appearance: bool = False) -> dict[str, object] | None:
+              delays = (0, 2, 4, 8) if wait_for_appearance else (0,)
+              for index, delay in enumerate(delays):
+                  if delay:
+                      time.sleep(delay)
+                  try:
+                      release = read_release_once()
+                  except GitHubUnavailable:
+                      if index == len(delays) - 1:
+                          raise
+                      continue
+                  if release is not None or not wait_for_appearance or index == len(delays) - 1:
+                      return release
+              return None
+
+          def read_tag_ref() -> str | None:
+              result = run_gh(
+                  ["api", f"repos/{repository}/git/ref/tags/{release_tag}", "--jq", ".object.sha"]
+              )
+              if result.returncode == 0:
+                  return result.stdout.strip()
+              output = f"{result.stdout}\n{result.stderr}"
+              if "http 404" in output.lower() or "not found" in output.lower():
+                  return None
+              if has_server_error(output):
+                  raise GitHubUnavailable(run_error("GitHub tag-ref readback", result))
+              raise SystemExit(run_error("GitHub tag-ref readback", result))
+
+          def require_api_health() -> None:
+              result = run_gh(["api", f"repos/{repository}", "--jq", ".full_name"])
+              if result.returncode != 0 or result.stdout.strip().lower() != repository.lower():
+                  raise SystemExit(run_error("GitHub API health readback", result))
+
+          def local_assets() -> dict[str, dict[str, object]]:
+              result: dict[str, dict[str, object]] = {}
+              for name, path in files.items():
+                  if path.is_symlink() or not path.is_file():
+                      raise SystemExit(f"current-run owner asset is missing or unsafe: {name}")
+                  raw = path.read_bytes()
+                  result[name] = {
+                      "size": len(raw),
+                      "digest": f"sha256:{hashlib.sha256(raw).hexdigest()}",
+                  }
+              return result
+
+          expected_assets = local_assets()
+
+          # Bind the draft to this exact source and run attempt before any publication.
+          try:
+              owner = json.loads(files["owner-publication-v1.json"].read_text(encoding="utf-8"))
+              catalog = json.loads(files["product-catalog-v2.json"].read_text(encoding="utf-8"))
+          except (OSError, json.JSONDecodeError) as error:
+              raise SystemExit("current-run owner publication metadata is invalid") from error
+          provenance = owner.get("provenance", {})
+          attestation = provenance.get("attestation", {}).get("attestation", {})
+          attestation_run = attestation.get("run", {})
+          catalog_digest = expected_assets["product-catalog-v2.json"]["digest"]
+          bundle_digest = expected_assets["product-catalog-v2.attestation.jsonl"]["digest"]
+          expected_workflow = f"{repository}/.github/workflows/product-contract.yml"
+          expected_run_url = f"https://github.com/{repository}/actions/runs/{run_id}/attempts/{run_attempt}"
+          if (
+              owner.get("source") != {"repository": repository, "ref": source_ref, "commit": source_commit}
+              or owner.get("catalogSha256") != catalog_digest
+              or owner.get("ownerId") != catalog.get("ownerId")
+              or owner.get("catalogPath") != f"{repository}/contracts/product/v2/catalog.json"
+              or provenance.get("subjectDigest") != catalog_digest
+              or provenance.get("bundleSha256") != bundle_digest
+              or attestation.get("repository") != repository
+              or attestation.get("workflow") != expected_workflow
+              or attestation.get("subjectName") != "catalog.json"
+              or attestation_run.get("id") != run_id
+              or attestation_run.get("attempt") != run_attempt
+              or attestation_run.get("url") != expected_run_url
+          ):
+              raise SystemExit("owner-publication metadata does not match this source and run attempt")
+
+          def validate_release(release: dict[str, object], *, draft: bool, immutable: bool) -> None:
+              if (
+                  release.get("tagName") != release_tag
+                  or release.get("targetCommitish") != source_commit
+                  or release.get("isPrerelease") is not (channel == "preview")
+                  or release.get("isDraft") is not draft
+                  or release.get("isImmutable") is not immutable
+              ):
+                  raise SystemExit("owner release state does not match the exact current source")
+              assets = release.get("assets")
+              if not isinstance(assets, list) or len(assets) != len(expected_assets):
+                  raise SystemExit("owner release does not contain exactly the three current-run assets")
+              actual: dict[str, dict[str, object]] = {}
+              for asset in assets:
+                  if not isinstance(asset, dict) or not isinstance(asset.get("name"), str):
+                      raise SystemExit("owner release contains malformed asset metadata")
+                  name = asset["name"]
+                  if name in actual:
+                      raise SystemExit("owner release contains duplicate asset names")
+                  actual[name] = asset
+              if set(actual) != set(expected_assets):
+                  raise SystemExit("owner release asset names do not match the exact current-run set")
+              for name, expected in expected_assets.items():
+                  asset = actual[name]
+                  if (
+                      asset.get("size") != expected["size"]
+                      or asset.get("digest") != expected["digest"]
+                      or asset.get("state") != "uploaded"
+                  ):
+                      raise SystemExit(f"owner release asset does not match current-run bytes: {name}")
+
+          def validate_draft(release: dict[str, object]) -> str:
+              validate_release(release, draft=True, immutable=False)
+              tag_commit = read_tag_ref()
+              if tag_commit is not None:
+                  raise SystemExit("draft release tag ref already exists; refusing to publish")
+              release_id = release.get("databaseId")
+              if not isinstance(release_id, int) or release_id < 1:
+                  raise SystemExit("draft release has no valid API id")
+              return str(release_id)
+
+          release = read_release()
+          if release is not None:
+              release_id = validate_draft(release)
+          else:
+              tag_commit = read_tag_ref()
+              if tag_commit is not None:
+                  raise SystemExit("owner release tag already exists without the exact draft; refusing create")
+              release_args = [
+                  "release",
+                  "create",
+                  release_tag,
+                  *(str(path) for path in files.values()),
+                  "--repo",
+                  repository,
+                  "--draft",
+                  "--target",
+                  source_commit,
+                  "--title",
+                  f"Product catalog v2 {channel} {source_commit}",
+                  "--notes",
+                  f"Owner-published Product catalog and detached GitHub artifact attestation for {repository}@{source_commit} ({source_ref}).",
+              ]
+              if channel == "preview":
+                  release_args.append("--prerelease")
+              release_id = ""
+              for attempt in range(3):
+                  if attempt:
+                      release = read_release(wait_for_appearance=True)
+                      if release is not None:
+                          release_id = validate_draft(release)
+                          break
+                      if read_tag_ref() is not None:
+                          raise SystemExit("owner tag appeared before bounded create retry; refusing retry")
+                  create_result = run_gh(release_args)
+                  release = read_release(wait_for_appearance=True)
+                  if release is not None:
+                      release_id = validate_draft(release)
+                      break
+                  if create_result.returncode == 0:
+                      raise SystemExit("release create succeeded but exact draft readback did not appear")
+                  create_output = f"{create_result.stdout}\n{create_result.stderr}"
+                  if not has_server_error(create_output):
+                      raise SystemExit(run_error("owner release create", create_result))
+                  if read_tag_ref() is not None:
+                      raise SystemExit("create returned a server error and the owner tag now exists; refusing retry")
+                  require_api_health()
+                  if attempt == 2:
+                      raise SystemExit("owner release create exhausted bounded retries after API 5xx")
+                  time.sleep((2, 4)[attempt])
+              if not release_id:
+                  raise SystemExit("owner release create did not produce a verified current-run draft")
+
+          published = False
+          for attempt in range(2):
+              current = read_release(wait_for_appearance=True)
+              if current is None:
+                  raise SystemExit("owner draft disappeared before publication")
+              if current.get("isDraft") is False:
+                  validate_release(current, draft=False, immutable=True)
+                  if read_tag_ref() != source_commit:
+                      raise SystemExit("published owner tag does not resolve to the exact source commit")
+                  release_id = str(current.get("databaseId"))
+                  published = True
+                  break
+              release_id = validate_draft(current)
+              patch_result = run_gh(
+                  ["api", "--method", "PATCH", f"repos/{repository}/releases/{release_id}", "-F", "draft=false"]
+              )
+              current = read_release(wait_for_appearance=True)
+              if current is None:
+                  raise SystemExit("owner release disappeared after publish request")
+              if current.get("isDraft") is False:
+                  validate_release(current, draft=False, immutable=True)
+                  if read_tag_ref() != source_commit:
+                      raise SystemExit("published owner tag does not resolve to the exact source commit")
+                  published = True
+                  break
+              validate_draft(current)
+              patch_output = f"{patch_result.stdout}\n{patch_result.stderr}"
+              if patch_result.returncode == 0 or not has_server_error(patch_output):
+                  raise SystemExit(run_error("owner release publish", patch_result))
+              require_api_health()
+              if attempt == 1:
+                  raise SystemExit("owner release publish exhausted bounded retries after API 5xx")
+              time.sleep(2)
+
+          if not published:
+              raise SystemExit("owner release did not reach an exact immutable published state")
+          print(f"Published immutable owner release {release_id} for source {source_commit} and run attempt {run_attempt}")
+
           immutable="$(gh api "repos/$SOURCE_REPOSITORY/releases/tags/$RELEASE_TAG" --jq .immutable)"
           if [[ "$immutable" != true ]]; then
             echo "GitHub did not enforce immutable releases for $SOURCE_REPOSITORY; refusing acceptance" >&2
