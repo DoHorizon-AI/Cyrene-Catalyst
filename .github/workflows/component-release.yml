@@ -95,7 +95,7 @@ jobs:
       IMAGE_TAG: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
       CATALOG_HELPER_SOURCE_COMMIT: 098ce4affb2fac38754eb18bd40ed679377d4c25
       CATALOG_RELEASE_ID: ${{ inputs.catalog_release_id || (github.ref == 'refs/heads/develop' && vars.CYRENE_PREVIEW_COMPONENT_CATALOG_RELEASE_ID) || (github.ref != 'refs/heads/develop' && vars.CYRENE_STABLE_COMPONENT_CATALOG_RELEASE_ID) || '' }}
-      WORKSPACE_BUILDER_COMMIT: 2e2874768924922549b634601aa05ff6de48169a
+      WORKSPACE_BUILDER_COMMIT: 2b1210a19b5596cb90e3ac7c46a912a8a255da80
       TARGET_PROFILE: ${{ matrix.target_profile }}
     steps:
       - name: Check out exact Product source
@@ -400,6 +400,7 @@ jobs:
       - name: Validate and fetch the Platform SDK from its immutable index
         env:
           INDEX_PATH: ${{ steps.sdk-index.outputs.index_path }}
+          PLATFORM_SOURCE_COMMIT: ${{ steps.sdk-index.outputs.source_commit }}
         run: |
           set -euo pipefail
           python platform-tools/tooling/release/validate_component_schema.py \
