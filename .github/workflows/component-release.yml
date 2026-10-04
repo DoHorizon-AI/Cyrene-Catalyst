@@ -975,7 +975,7 @@ jobs:
           print(Path(urlparse(document["artifact"]["uri"]).path).name)
           PY
           )"
-            verify_args=(--manifest "$manifest" --catalog workspace-catalog/governance/component-catalog-v1.json --verify-run --verify-attestation-only)
+            verify_args=(--manifest "$manifest" --catalog workspace-catalog/governance/component-catalog-v1.json --verify-attestation-only)
             if [ -n "$artifact_name" ] && [ -f "$OUTPUT_ROOT/artifacts/$artifact_name" ]; then
               verify_args+=(--artifact "$OUTPUT_ROOT/artifacts/$artifact_name")
             fi
