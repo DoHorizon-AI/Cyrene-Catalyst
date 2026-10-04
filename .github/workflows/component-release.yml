@@ -20,6 +20,9 @@ on:
 permissions:
   contents: read
 
+env:
+  PRODUCT_COMPONENT_ID: cyrene-catalyst
+
 concurrency:
   group: component-release-${{ github.repository }}-${{ github.sha }}
   cancel-in-progress: false
@@ -50,14 +53,33 @@ jobs:
       - run: uv run pytest -q
       - run: uv run openapi-spec-validator contracts/product/v1/openapi.yaml
 
-  component-release:
+  product_native_build:
     if: github.event_name != 'pull_request'
     needs: [product-tests]
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target_profile: linux-ubuntu-22.04-x86_64-python-3.12
+            runner: ubuntu-22.04
+          - target_profile: linux-ubuntu-24.04-x86_64-python-3.12
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    outputs:
+      catalog_release_id: ${{ steps.catalog-fetch.outputs.catalog_release_id }}
+      catalog_sha256: ${{ steps.catalog-fetch.outputs.catalog_sha256 }}
+      platform_source_commit: ${{ steps.sdk-index.outputs.source_commit }}
+      platform_source_ref: ${{ steps.sdk-index.outputs.source_ref }}
+      platform_index_file_sha256: ${{ steps.sdk-index.outputs.index_sha256 }}
+      workspace_builder_commit: ${{ steps.prepare.outputs.workspace_builder_commit }}
+      sdk_release_id: ${{ steps.prepare.outputs.sdk_release_id }}
+      sdk_manifest_digest: ${{ steps.prepare.outputs.sdk_manifest_digest }}
+      sdk_artifact_digest: ${{ steps.prepare.outputs.sdk_artifact_digest }}
+      release_lock_sha256: ${{ steps.prepare.outputs.release_lock_sha256 }}
     permissions:
       actions: read
       attestations: write
-      contents: write
+      contents: read
       id-token: write
       packages: write
     env:
@@ -71,9 +93,10 @@ jobs:
       CHANNEL: ${{ github.ref == 'refs/heads/develop' && 'preview' || 'stable' }}
       RELEASE_ID: ${{ (github.ref == 'refs/heads/develop' && 'preview-' || 'stable-') }}${{ github.sha }}
       IMAGE_TAG: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-      CATALOG_HELPER_SOURCE_COMMIT: "69481d10f4a89f4679bc00195bc9caa5db5fb16a"
+      CATALOG_HELPER_SOURCE_COMMIT: 098ce4affb2fac38754eb18bd40ed679377d4c25
       CATALOG_RELEASE_ID: ${{ inputs.catalog_release_id || (github.ref == 'refs/heads/develop' && vars.CYRENE_PREVIEW_COMPONENT_CATALOG_RELEASE_ID) || (github.ref != 'refs/heads/develop' && vars.CYRENE_STABLE_COMPONENT_CATALOG_RELEASE_ID) || '' }}
-      WORKSPACE_BUILDER_COMMIT: 75d05e05e2ee83118d7eb0a726f4dfb96124e0ae
+      WORKSPACE_BUILDER_COMMIT: 098ce4affb2fac38754eb18bd40ed679377d4c25
+      TARGET_PROFILE: ${{ matrix.target_profile }}
     steps:
       - name: Check out exact Product source
         uses: actions/checkout@v5
@@ -167,6 +190,14 @@ jobs:
           test "$actual" = "$catalog_sha256"
           echo "CATALOG_SHA256=$catalog_sha256" >> "$GITHUB_ENV"
           echo "catalog_sha256=$catalog_sha256" >> "$GITHUB_OUTPUT"
+          catalog_release_id="$(python - workspace-catalog/component-catalog-release.json <<'PY'
+          import json, sys
+          from pathlib import Path
+          print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["releaseId"])
+          PY
+          )"
+          test -n "$catalog_release_id"
+          echo "catalog_release_id=$catalog_release_id" >> "$GITHUB_OUTPUT"
       - name: Set component output path
         run: echo "OUTPUT_ROOT=$RUNNER_TEMP/component-release" >> "$GITHUB_ENV"
 
@@ -283,6 +314,7 @@ jobs:
               output.write(f"source_commit={selected[0]}\n")
               output.write(f"source_ref={selected[1]}\n")
               output.write(f"index_path={os.environ['INDEX_PATH']}\n")
+              output.write(f"index_sha256={hashlib.sha256(Path(os.environ['INDEX_PATH']).read_bytes()).hexdigest()}\n")
           PY
 
       - name: Verify the Platform index attestation before using its source commit
@@ -315,6 +347,30 @@ jobs:
           ref: ${{ env.WORKSPACE_BUILDER_COMMIT }}
           path: workspace-builder
           persist-credentials: false
+
+      - name: Prepare the locked native Python 3.12 runtime
+        id: python-runtime
+        env:
+          TARGET_PROFILE: ${{ matrix.target_profile }}
+        run: |
+          set -euo pipefail
+          python3 workspace-builder/packaging/python_runtime.py prepare \
+            --lock workspace-builder/packaging/python-runtime.lock.json \
+            --release-lock workspace-builder/release-lock.json \
+            --target-profile "$TARGET_PROFILE" \
+            --stage-root "$RUNNER_TEMP/cyrene-python-stage" \
+            --work-dir "$RUNNER_TEMP/cyrene-python-work" \
+            --json > "$RUNNER_TEMP/python-runtime-receipt.json"
+          python3 - "$RUNNER_TEMP/python-runtime-receipt.json" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          from pathlib import Path
+          receipt = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          for key, output in (("stagedPythonExecutable", "staged_python_executable"), ("uvExecutable", "uv_executable")):
+              value = receipt.get(key)
+              if not isinstance(value, str) or not value.startswith("/"):
+                  raise SystemExit(f"runtime helper returned an invalid {key}")
+              print(f"{output}={value}")
+          PY
 
       - name: Install pinned release tooling
         run: |
@@ -360,6 +416,7 @@ jobs:
             --component cyrene-runtime-maintenance-sdk \
             --target-id linux-ubuntu-24.04-x86_64-python-3.12-library \
             --channel "$CHANNEL" \
+            --source-commit "$PLATFORM_SOURCE_COMMIT" \
             --output "$RUNNER_TEMP/platform-sdk-fetch" \
             > "$RUNNER_TEMP/platform-sdk-fetch-result.json"
 
@@ -367,6 +424,9 @@ jobs:
         id: prepare
         env:
           PLATFORM_SOURCE_COMMIT: ${{ steps.sdk-index.outputs.source_commit }}
+          TARGET_PROFILE: ${{ matrix.target_profile }}
+          PYTHON_EXECUTABLE: ${{ steps.python-runtime.outputs.staged_python_executable }}
+          UV_EXECUTABLE: ${{ steps.python-runtime.outputs.uv_executable }}
           PRODUCT_ID: cyrene-catalyst
           PRODUCT_REPOSITORY: ${{ github.repository }}
         run: |
@@ -388,6 +448,9 @@ jobs:
             --catalog workspace-catalog/governance/component-catalog-v1.json \
             --catalog-sha256 "$CATALOG_SHA256" \
             --sdk-fetch-result "$RUNNER_TEMP/platform-sdk-fetch-result.json" \
+            --target-profile "$TARGET_PROFILE" \
+            --python-executable "$PYTHON_EXECUTABLE" \
+            --uv-executable "$UV_EXECUTABLE" \
             --run-id "$RUN_ID" \
             --run-attempt "$RUN_ATTEMPT" \
             --output "$OUTPUT_ROOT" > "$RUNNER_TEMP/product-component-result.json"
@@ -397,6 +460,7 @@ jobs:
           result = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
           outputs = {
               "component_id": result["componentId"],
+              "target_profile": result["targetProfile"],
               "version": result["version"],
               "python_bundle": str(result["pythonBundle"]).lower(),
               "python_manifest": result["pythonManifest"],
@@ -424,11 +488,11 @@ jobs:
           PY
 
       - name: Set up Docker Buildx
-        if: steps.prepare.outputs.oci_image == 'true'
+        if: steps.prepare.outputs.oci_image == 'true' && matrix.target_profile == 'linux-ubuntu-24.04-x86_64-python-3.12'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GitHub Container Registry
-        if: steps.prepare.outputs.oci_image == 'true'
+        if: steps.prepare.outputs.oci_image == 'true' && matrix.target_profile == 'linux-ubuntu-24.04-x86_64-python-3.12'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -436,7 +500,7 @@ jobs:
           password: ${{ github.token }}
 
       - name: Build and push the Product OCI image by immutable source tag
-        if: steps.prepare.outputs.oci_image == 'true'
+        if: steps.prepare.outputs.oci_image == 'true' && matrix.target_profile == 'linux-ubuntu-24.04-x86_64-python-3.12'
         id: product-image
         uses: docker/build-push-action@v6
         with:
@@ -469,7 +533,7 @@ jobs:
           sbom: true
 
       - name: Create and attest the OCI release manifest
-        if: steps.prepare.outputs.oci_image == 'true'
+        if: steps.prepare.outputs.oci_image == 'true' && matrix.target_profile == 'linux-ubuntu-24.04-x86_64-python-3.12'
         env:
           IMAGE_DIGEST: ${{ steps.product-image.outputs.digest }}
           COMPONENT_ID: ${{ steps.prepare.outputs.component_id }}
@@ -506,14 +570,429 @@ jobs:
           subject-path: ${{ steps.prepare.outputs.python_artifact }}
           github-token: ${{ github.token }}
 
+      - name: Download and verify the detached Product bundle attestation
+        if: steps.prepare.outputs.python_bundle == 'true'
+        env:
+          ARTIFACT_PATH: ${{ steps.prepare.outputs.python_artifact }}
+        run: |
+          set -euo pipefail
+          download_dir="$RUNNER_TEMP/product-attestation-download"
+          mkdir -p "$download_dir" "$OUTPUT_ROOT/attestations"
+          (
+            cd "$download_dir"
+            gh attestation download "$ARTIFACT_PATH" \
+              --repo "$SOURCE_REPOSITORY" \
+              --limit 1 \
+              --predicate-type https://slsa.dev/provenance/v1
+          )
+          mapfile -t bundles < <(find "$download_dir" -maxdepth 1 -type f -name '*.jsonl' -print)
+          if [[ "${#bundles[@]}" -ne 1 ]]; then
+            echo "expected one detached Product bundle attestation, found ${#bundles[@]}" >&2
+            exit 2
+          fi
+          artifact_name="$(basename "$ARTIFACT_PATH")"
+          bundle_path="$OUTPUT_ROOT/attestations/$artifact_name.attestation.jsonl"
+          mv "${bundles[0]}" "$bundle_path"
+          gh attestation verify "$ARTIFACT_PATH" \
+            --repo "$SOURCE_REPOSITORY" \
+            --bundle "$bundle_path" \
+            --cert-identity "https://github.com/$SOURCE_REPOSITORY/.github/workflows/component-release.yml@$SOURCE_REF" \
+            --source-digest "$SOURCE_COMMIT" \
+            --source-ref "$SOURCE_REF" \
+            --deny-self-hosted-runners
+
       - name: Attest Product OCI image digest
-        if: steps.prepare.outputs.oci_image == 'true'
+        if: steps.prepare.outputs.oci_image == 'true' && matrix.target_profile == 'linux-ubuntu-24.04-x86_64-python-3.12'
         uses: actions/attest@v4
         with:
           subject-name: ${{ steps.prepare.outputs.oci_repository }}
           subject-digest: ${{ steps.product-image.outputs.digest }}
           push-to-registry: true
           github-token: ${{ github.token }}
+
+
+      - name: Record verified native Product publication inputs
+        env:
+          CATALOG_RELEASE_ID: ${{ steps.catalog-fetch.outputs.catalog_release_id }}
+          PLATFORM_SOURCE_COMMIT: ${{ steps.sdk-index.outputs.source_commit }}
+          PLATFORM_SOURCE_REF: ${{ steps.sdk-index.outputs.source_ref }}
+          PLATFORM_INDEX_FILE_SHA256: ${{ steps.sdk-index.outputs.index_sha256 }}
+          SDK_RELEASE_ID: ${{ steps.prepare.outputs.sdk_release_id }}
+          SDK_MANIFEST_DIGEST: ${{ steps.prepare.outputs.sdk_manifest_digest }}
+          SDK_ARTIFACT_DIGEST: ${{ steps.prepare.outputs.sdk_artifact_digest }}
+          RELEASE_LOCK_SHA256: ${{ steps.prepare.outputs.release_lock_sha256 }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUTPUT_ROOT/publisher-context"
+          python - "$RUNNER_TEMP/product-component-result.json" "$OUTPUT_ROOT/publisher-context/context-$TARGET_PROFILE.json" <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          result = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          receipt = {
+              "schemaVersion": 1,
+              "productComponentId": os.environ["PRODUCT_COMPONENT_ID"],
+              "productRepository": os.environ["SOURCE_REPOSITORY"],
+              "sourceCommit": os.environ["SOURCE_COMMIT"],
+              "sourceRef": os.environ["SOURCE_REF"],
+              "channel": os.environ["CHANNEL"],
+              "releaseId": os.environ["RELEASE_ID"],
+              "runId": os.environ["RUN_ID"],
+              "runAttempt": int(os.environ["RUN_ATTEMPT"]),
+              "targetProfile": os.environ["TARGET_PROFILE"],
+              "catalogReleaseId": os.environ["CATALOG_RELEASE_ID"],
+              "catalogSha256": "sha256:" + os.environ["CATALOG_SHA256"],
+              "platformSourceCommit": os.environ["PLATFORM_SOURCE_COMMIT"],
+              "platformSourceRef": os.environ["PLATFORM_SOURCE_REF"],
+              "platformIndexFileSha256": os.environ["PLATFORM_INDEX_FILE_SHA256"],
+              "workspaceBuilderCommit": result["workspaceBuilderCommit"],
+              "sdkReleaseId": os.environ["SDK_RELEASE_ID"],
+              "sdkManifestDigest": os.environ["SDK_MANIFEST_DIGEST"],
+              "sdkArtifactDigest": os.environ["SDK_ARTIFACT_DIGEST"],
+              "releaseLockSha256": os.environ["RELEASE_LOCK_SHA256"],
+          }
+          Path(sys.argv[2]).write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload this native Product profile
+        uses: actions/upload-artifact@v4
+        with:
+          name: product-native-${{ matrix.target_profile }}
+          path: |
+            ${{ runner.temp }}/component-release/artifacts/**
+            ${{ runner.temp }}/component-release/manifests/**
+            ${{ runner.temp }}/component-release/attestations/**
+            ${{ runner.temp }}/component-release/publisher-context/**
+          if-no-files-found: error
+          retention-days: 1
+  component-release:
+    if: github.event_name != 'pull_request'
+    needs: [product-tests, product_native_build]
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      attestations: write
+      contents: write
+      id-token: write
+      packages: read
+    env:
+      SOURCE_COMMIT: ${{ github.sha }}
+      SOURCE_REF: ${{ github.ref }}
+      SOURCE_REPOSITORY: ${{ github.repository }}
+      RUN_ID: ${{ github.run_id }}
+      RUN_ATTEMPT: ${{ github.run_attempt }}
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      CHANNEL: ${{ github.ref == 'refs/heads/develop' && 'preview' || 'stable' }}
+      RELEASE_ID: ${{ (github.ref == 'refs/heads/develop' && 'preview-' || 'stable-') }}${{ github.sha }}
+      CATALOG_HELPER_SOURCE_COMMIT: 098ce4affb2fac38754eb18bd40ed679377d4c25
+      CATALOG_RELEASE_ID: ${{ needs.product_native_build.outputs.catalog_release_id }}
+      CATALOG_SHA256: ${{ needs.product_native_build.outputs.catalog_sha256 }}
+      PLATFORM_SOURCE_COMMIT: ${{ needs.product_native_build.outputs.platform_source_commit }}
+      PLATFORM_SOURCE_REF: ${{ needs.product_native_build.outputs.platform_source_ref }}
+      PLATFORM_INDEX_FILE_SHA256: ${{ needs.product_native_build.outputs.platform_index_file_sha256 }}
+      WORKSPACE_BUILDER_COMMIT: ${{ needs.product_native_build.outputs.workspace_builder_commit }}
+      SDK_RELEASE_ID: ${{ needs.product_native_build.outputs.sdk_release_id }}
+      SDK_MANIFEST_DIGEST: ${{ needs.product_native_build.outputs.sdk_manifest_digest }}
+      SDK_ARTIFACT_DIGEST: ${{ needs.product_native_build.outputs.sdk_artifact_digest }}
+      RELEASE_LOCK_SHA256: ${{ needs.product_native_build.outputs.release_lock_sha256 }}
+    steps:
+      - name: Set component release output root
+        run: printf 'OUTPUT_ROOT=%s/component-release\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Check out exact Product source
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          path: product-source
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download both native Product profiles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: product-native-*
+          path: ${{ runner.temp }}/component-release
+          merge-multiple: true
+
+      - name: Set up Python 3.12 release tooling runtime
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Check out the exact Platform release tools
+        uses: actions/checkout@v5
+        with:
+          repository: DoHorizon-AI/Cyrene-Platform
+          ref: ${{ env.PLATFORM_SOURCE_COMMIT }}
+          path: platform-tools
+          persist-credentials: false
+
+      - name: Check out the fixed catalog verifier and schemas
+        uses: actions/checkout@v5
+        with:
+          repository: DoHorizon-AI/Cyrene-Workspace
+          ref: ${{ env.CATALOG_HELPER_SOURCE_COMMIT }}
+          path: catalog-helper
+          fetch-depth: 0
+          persist-credentials: false
+          sparse-checkout: |
+            packaging/fetch_component_catalog.py
+            packaging/catalog_metadata.py
+            packaging/component_updates.py
+            governance/component-catalog-v1.json
+            governance/component-catalog-v1.schema.json
+            governance/component-release-manifest-v1.schema.json
+            governance/component-release-manifest-v2.schema.json
+            governance/component-release-index-v1.schema.json
+          sparse-checkout-cone-mode: false
+
+      - name: Install pinned release tooling
+        run: python -m pip install --disable-pip-version-check build pyyaml pytest uv==0.12.3 jsonschema==4.26.0 rfc8785==0.1.4 -r platform-tools/tooling/release/requirements.txt
+
+      - name: Verify the two profile receipts bind one current Product release
+        run: |
+          set -euo pipefail
+          test "$(git -C product-source rev-parse HEAD)" = "$SOURCE_COMMIT"
+          test "$(git -C platform-tools rev-parse HEAD)" = "$PLATFORM_SOURCE_COMMIT"
+          python - "$OUTPUT_ROOT/publisher-context" <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          expected_profiles = {
+              "linux-ubuntu-22.04-x86_64-python-3.12",
+              "linux-ubuntu-24.04-x86_64-python-3.12",
+          }
+          paths = sorted(Path(sys.argv[1]).glob("context-*.json"))
+          if len(paths) != 2:
+              raise SystemExit("both native Product profile receipts are required")
+          receipts = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+          if {row.get("targetProfile") for row in receipts} != expected_profiles:
+              raise SystemExit("native Product receipts do not cover Ubuntu 22.04 and Ubuntu 24.04")
+          expected = {
+              "schemaVersion": 1,
+              "productComponentId": os.environ["PRODUCT_COMPONENT_ID"],
+              "productRepository": os.environ["SOURCE_REPOSITORY"],
+              "sourceCommit": os.environ["SOURCE_COMMIT"],
+              "sourceRef": os.environ["SOURCE_REF"],
+              "channel": os.environ["CHANNEL"],
+              "releaseId": os.environ["RELEASE_ID"],
+              "runId": os.environ["RUN_ID"],
+              "runAttempt": int(os.environ["RUN_ATTEMPT"]),
+              "catalogReleaseId": os.environ["CATALOG_RELEASE_ID"],
+              "catalogSha256": "sha256:" + os.environ["CATALOG_SHA256"],
+              "platformSourceCommit": os.environ["PLATFORM_SOURCE_COMMIT"],
+              "platformSourceRef": os.environ["PLATFORM_SOURCE_REF"],
+              "platformIndexFileSha256": os.environ["PLATFORM_INDEX_FILE_SHA256"],
+              "workspaceBuilderCommit": os.environ["WORKSPACE_BUILDER_COMMIT"],
+              "sdkReleaseId": os.environ["SDK_RELEASE_ID"],
+              "sdkManifestDigest": os.environ["SDK_MANIFEST_DIGEST"],
+              "sdkArtifactDigest": os.environ["SDK_ARTIFACT_DIGEST"],
+              "releaseLockSha256": os.environ["RELEASE_LOCK_SHA256"],
+          }
+          for row in receipts:
+              for key, value in expected.items():
+                  if row.get(key) != value:
+                      raise SystemExit(f"native Product receipt {key} differs between profiles or from this run")
+          PY
+          mkdir -p "$OUTPUT_ROOT/artifacts" "$OUTPUT_ROOT/manifests" "$OUTPUT_ROOT/attestations"
+
+      - name: Fetch and verify the exact immutable catalog release
+        run: |
+          set -euo pipefail
+          mkdir -p workspace-catalog/governance
+          for schema in \
+            component-catalog-v1.schema.json \
+            component-release-manifest-v1.schema.json \
+            component-release-manifest-v2.schema.json \
+            component-release-index-v1.schema.json; do
+            cp "catalog-helper/governance/$schema" workspace-catalog/governance/
+          done
+          python catalog-helper/packaging/fetch_component_catalog.py \
+            --release-id "$CATALOG_RELEASE_ID" \
+            --output workspace-catalog/governance/component-catalog-v1.json \
+            --metadata-output workspace-catalog/component-catalog-release.json \
+            --schema-root catalog-helper/governance
+          actual_catalog_sha256="$(sha256sum workspace-catalog/governance/component-catalog-v1.json | cut -d ' ' -f 1)"
+          test "$actual_catalog_sha256" = "$CATALOG_SHA256"
+          test "$(python - workspace-catalog/component-catalog-release.json <<'PY'
+          import json, sys
+          from pathlib import Path
+          print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["releaseId"])
+          PY
+          )" = "$CATALOG_RELEASE_ID"
+
+      - name: Fetch and verify the exact Platform index and SDK source
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/platform-index"
+          gh release download "$CHANNEL-$PLATFORM_SOURCE_COMMIT" \
+            --repo DoHorizon-AI/Cyrene-Platform \
+            --pattern component-release-index-v1.json \
+            --dir "$RUNNER_TEMP/platform-index"
+          PLATFORM_INDEX_PATH="$RUNNER_TEMP/platform-index/component-release-index-v1.json"
+          echo "PLATFORM_INDEX_PATH=$PLATFORM_INDEX_PATH" >> "$GITHUB_ENV"
+          python - "$PLATFORM_INDEX_PATH" <<'PY'
+          import hashlib
+          import json
+          import os
+          import sys
+          from pathlib import Path
+          import rfc8785
+          path = Path(sys.argv[1])
+          index = json.loads(path.read_text(encoding="utf-8"))
+          digest_input = {key: value for key, value in index.items() if key != "indexDigest"}
+          digest = "sha256:" + hashlib.sha256(rfc8785.dumps(digest_input)).hexdigest()
+          if hashlib.sha256(path.read_bytes()).hexdigest() != os.environ["PLATFORM_INDEX_FILE_SHA256"]:
+              raise SystemExit("downloaded Platform index bytes differ from both native build receipts")
+          if (
+              index.get("source", {}).get("commit") != os.environ["PLATFORM_SOURCE_COMMIT"]
+              or index.get("source", {}).get("ref") != os.environ["PLATFORM_SOURCE_REF"]
+              or index.get("channel") != os.environ["CHANNEL"]
+              or index.get("indexDigest") != digest
+          ):
+              raise SystemExit("Platform index source or canonical digest differs from both native builds")
+          PY
+          gh attestation verify "$PLATFORM_INDEX_PATH" \
+            --repo DoHorizon-AI/Cyrene-Platform \
+            --signer-workflow DoHorizon-AI/Cyrene-Platform/.github/workflows/component-release.yml \
+            --source-ref "$PLATFORM_SOURCE_REF" \
+            --source-digest "$PLATFORM_SOURCE_COMMIT" \
+            --predicate-type https://slsa.dev/provenance/v1 \
+            --format json >/dev/null
+          python platform-tools/tooling/release/component_artifacts.py verify-index \
+            --index "$PLATFORM_INDEX_PATH" \
+            --catalog workspace-catalog/governance/component-catalog-v1.json \
+            --verify-run \
+            --verify-attestation
+          python platform-tools/tooling/release/fetch_component.py \
+            --catalog workspace-catalog/governance/component-catalog-v1.json \
+            --component cyrene-runtime-maintenance-sdk \
+            --target-id linux-ubuntu-24.04-x86_64-python-3.12-library \
+            --channel "$CHANNEL" \
+            --source-commit "$PLATFORM_SOURCE_COMMIT" \
+            --output "$RUNNER_TEMP/platform-sdk-verify" \
+            > "$RUNNER_TEMP/platform-sdk-verify-result.json"
+          python - "$RUNNER_TEMP/platform-sdk-verify-result.json" <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          result = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          manifest = result.get("manifest", {})
+          artifact = manifest.get("artifact", {})
+          if (
+              manifest.get("releaseId") != os.environ["SDK_RELEASE_ID"]
+              or manifest.get("manifestDigest") != "sha256:" + os.environ["SDK_MANIFEST_DIGEST"]
+              or artifact.get("sha256") != os.environ["SDK_ARTIFACT_DIGEST"]
+          ):
+              raise SystemExit("exact Platform SDK release differs from the native build inputs")
+          PY
+
+      - name: Prove immutable Product release is enabled and unused
+        env:
+          CYRENE_IMMUTABLE_RELEASES_READ_TOKEN: ${{ secrets.CYRENE_IMMUTABLE_RELEASES_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          python platform-tools/tooling/release/preflight_component_release.py \
+            --repository "$SOURCE_REPOSITORY" \
+            --release-id "$RELEASE_ID" \
+            --channel "$CHANNEL" \
+            --source-ref "$SOURCE_REF" \
+            --source-commit "$SOURCE_COMMIT" \
+            --repository-root product-source
+
+      - name: Verify exact native Product profile manifests and provenance bundles
+        env:
+          PYTHONPATH: platform-tools/tooling/release
+        run: |
+          set -euo pipefail
+          python - "$OUTPUT_ROOT" <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+          from urllib.parse import urlparse
+          from component_artifacts import manifest_asset_name
+          root = Path(sys.argv[1])
+          profiles = {
+              "linux-ubuntu-22.04-x86_64-python-3.12": {"osVersion": "22.04", "distributionVersion": "22.04", "abi": "glibc-2.35"},
+              "linux-ubuntu-24.04-x86_64-python-3.12": {"osVersion": "24.04", "distributionVersion": "24.04", "abi": "glibc-2.39"},
+          }
+          rows = [(path, json.loads(path.read_text(encoding="utf-8"))) for path in sorted((root / "manifests").glob("*.manifest.json"))]
+          native = [(path, doc) for path, doc in rows if doc.get("artifact", {}).get("kind") == "python-bundle"]
+          if len(native) != 2:
+              raise SystemExit("Product release must contain exactly two native Python bundle manifests")
+          seen = set()
+          for manifest_path, manifest in native:
+              target = manifest.get("target", {})
+              target_profile = next((key for key, identity in profiles.items() if all(target.get(k) == v for k, v in identity.items())), None)
+              if target_profile is None or target_profile in seen:
+                  raise SystemExit("native Product manifests do not identify two unique Ubuntu target profiles")
+              seen.add(target_profile)
+              if (
+                  target.get("os") != "linux" or target.get("distribution") != "ubuntu"
+                  or target.get("architecture") != "x86_64" or target.get("runtime") != "python:3.12"
+                  or manifest_path.name != manifest_asset_name(manifest)
+                  or manifest.get("componentId") != os.environ["PRODUCT_COMPONENT_ID"]
+                  or manifest.get("releaseId") != os.environ["RELEASE_ID"]
+                  or manifest.get("channel") != os.environ["CHANNEL"]
+                  or manifest.get("source", {}).get("repository") != f"https://github.com/{os.environ['SOURCE_REPOSITORY']}"
+                  or manifest.get("source", {}).get("commit") != os.environ["SOURCE_COMMIT"]
+                  or manifest.get("source", {}).get("ref") != os.environ["SOURCE_REF"]
+              ):
+                  raise SystemExit("native Product manifest target, name, or immutable source identity is incorrect")
+              run = manifest.get("provenance", {}).get("attestation", {}).get("run", {})
+              if run.get("id") != os.environ["RUN_ID"] or run.get("attempt") != int(os.environ["RUN_ATTEMPT"]):
+                  raise SystemExit("native Product manifest is not bound to this workflow run attempt")
+              artifact_name = Path(urlparse(manifest["artifact"]["uri"]).path).name
+              if artifact_name != f"{os.environ['PRODUCT_COMPONENT_ID']}-{target_profile}.tar.gz":
+                  raise SystemExit("native Product archive name does not include its full catalog target ID")
+              if not (root / "artifacts" / artifact_name).is_file():
+                  raise SystemExit(f"native Product archive is missing: {artifact_name}")
+              bundle = root / "attestations" / f"{artifact_name}.attestation.jsonl"
+              if not bundle.is_file() or bundle.stat().st_size == 0:
+                  raise SystemExit(f"native Product attestation bundle is missing: {bundle.name}")
+          if seen != set(profiles):
+              raise SystemExit("Ubuntu 22.04 and Ubuntu 24.04 native Product profiles are both required")
+          oci = [doc for _path, doc in rows if doc.get("artifact", {}).get("kind") == "oci-image"]
+          if len(oci) > 1:
+              raise SystemExit("Product release contains more than one OCI manifest")
+          for manifest in oci:
+              if (
+                  manifest.get("componentId") != os.environ["PRODUCT_COMPONENT_ID"]
+                  or manifest.get("releaseId") != os.environ["RELEASE_ID"]
+                  or manifest.get("source", {}).get("commit") != os.environ["SOURCE_COMMIT"]
+              ):
+                  raise SystemExit("OCI manifest source or release identity differs from this Product run")
+          PY
+          for manifest in "$OUTPUT_ROOT/manifests"/*.manifest.json; do
+            artifact_name="$(python - "$manifest" <<'PY'
+          import json, sys
+          from pathlib import Path
+          from urllib.parse import urlparse
+          document = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          print(Path(urlparse(document["artifact"]["uri"]).path).name)
+          PY
+          )"
+            verify_args=(--manifest "$manifest" --catalog workspace-catalog/governance/component-catalog-v1.json --verify-run --verify-attestation)
+            if [ -n "$artifact_name" ] && [ -f "$OUTPUT_ROOT/artifacts/$artifact_name" ]; then
+              verify_args+=(--artifact "$OUTPUT_ROOT/artifacts/$artifact_name")
+            fi
+            python platform-tools/tooling/release/component_artifacts.py verify "${verify_args[@]}"
+          done
+          for artifact in "$OUTPUT_ROOT/artifacts"/*.tar.gz; do
+            bundle="$OUTPUT_ROOT/attestations/$(basename "$artifact").attestation.jsonl"
+            gh attestation verify "$artifact" \
+              --repo "$SOURCE_REPOSITORY" \
+              --signer-workflow "$SOURCE_REPOSITORY/.github/workflows/component-release.yml" \
+              --source-ref "$SOURCE_REF" \
+              --source-digest "$SOURCE_COMMIT" \
+              --predicate-type https://slsa.dev/provenance/v1 \
+              --bundle "$bundle" \
+              --cert-identity "https://github.com/$SOURCE_REPOSITORY/.github/workflows/component-release.yml@$SOURCE_REF" \
+              --deny-self-hosted-runners \
+              --format json >/dev/null
+          done
 
       - name: Create and validate the repository component index
         run: |
@@ -549,7 +1028,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          assets=("$OUTPUT_ROOT/artifacts"/*.tar.gz "$OUTPUT_ROOT/manifests"/*.manifest.json "$OUTPUT_ROOT/component-release-index-v1.json")
+          assets=("$OUTPUT_ROOT/artifacts"/*.tar.gz "$OUTPUT_ROOT/attestations"/*.attestation.jsonl "$OUTPUT_ROOT/manifests"/*.manifest.json "$OUTPUT_ROOT/component-release-index-v1.json")
           if [ "${#assets[@]}" -lt 2 ]; then
             echo "release payload or manifest set is incomplete" >&2
             exit 2
