@@ -998,7 +998,6 @@ jobs:
             bundle="$OUTPUT_ROOT/attestations/$(basename "$artifact").attestation.jsonl"
             gh attestation verify "$artifact" \
               --repo "$SOURCE_REPOSITORY" \
-              --signer-workflow "$SOURCE_REPOSITORY/.github/workflows/component-release.yml" \
               --source-ref "$SOURCE_REF" \
               --source-digest "$SOURCE_COMMIT" \
               --predicate-type https://slsa.dev/provenance/v1 \
