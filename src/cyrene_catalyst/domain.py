@@ -123,6 +123,21 @@ class Dataset(ContractModel):
     resource_version: int = Field(ge=1)
 
 
+class DataToolsVersionProjection(ContractModel):
+    """Additive dual-profile output metadata for one DatasetVersion.
+
+    中文:在唯一 DatasetVersion 上附加知识包与 SFT 包的引用及当前过期状态。
+    """
+
+    content_revision_id: UUID
+    source_revision_ids: list[UUID] = Field(default_factory=list)
+    knowledge_profile: Literal["CYRENE_KNOWLEDGE_BUNDLE_V1"] = "CYRENE_KNOWLEDGE_BUNDLE_V1"
+    knowledge_artifact: ArtifactRef
+    sft_profile: Literal["CYRENE_SFT_BUNDLE_V1"] = "CYRENE_SFT_BUNDLE_V1"
+    sft_artifact: ArtifactRef
+    stale: bool = False
+
+
 class DatasetVersion(ContractModel):
     """Immutable DatasetVersion and its lineage evidence. | 不可变版本及谱系证据。"""
 
@@ -133,12 +148,15 @@ class DatasetVersion(ContractModel):
     source: ArtifactRef
     output: ArtifactRef | None = None
     engine_binding_id: str = Field(min_length=1, max_length=200)
-    engine_capability_type: Literal["dataset.preparation.v1"] = "dataset.preparation.v1"
+    engine_capability_type: Literal["dataset.preparation.v1", "dataset.generation.v1"] = (
+        "dataset.preparation.v1"
+    )
     lineage: list[LineageEdge] = Field(default_factory=list)
     source_refs: list[str] = Field(default_factory=list)
     row_count: int | None = Field(default=None, ge=0)
     schema_fields: list[str] | None = None
     failure: ProductFailure | None = None
+    data_tools: DataToolsVersionProjection | None = None
     created_at: datetime
     updated_at: datetime
     resource_version: int = Field(ge=1)

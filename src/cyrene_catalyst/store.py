@@ -336,29 +336,60 @@ class CatalystStore:
                 (str(version.id), str(version.dataset_id), version.version, document),
             )
 
-    def get_version(self, version_id: UUID) -> DatasetVersion | None:
-        """Read a persisted success or failure. | 读取持久化成功或失败。"""
+    def get_version(
+        self,
+        version_id: UUID,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> DatasetVersion | None:
+        """Read a persisted version inside the owning Dataset scope.
+
+        中文:按唯一 Dataset authority 读取版本；提供 principal 时限制到该 Workspace。
+        """
 
         with self._lock:
-            row = self._connection.execute(
-                "SELECT v.document FROM dataset_versions AS v "
-                "JOIN datasets AS d ON d.id = v.dataset_id "
-                "WHERE v.id = ? AND d.organization_id IS NULL AND d.workspace_id IS NULL",
-                (str(version_id),),
-            ).fetchone()
+            if principal is None:
+                row = self._connection.execute(
+                    "SELECT v.document FROM dataset_versions AS v "
+                    "JOIN datasets AS d ON d.id = v.dataset_id "
+                    "WHERE v.id = ? AND d.organization_id IS NULL AND d.workspace_id IS NULL",
+                    (str(version_id),),
+                ).fetchone()
+            else:
+                row = self._connection.execute(
+                    "SELECT v.document FROM dataset_versions AS v "
+                    "JOIN datasets AS d ON d.id = v.dataset_id "
+                    "WHERE v.id = ? AND d.organization_id = ? AND d.workspace_id = ?",
+                    (str(version_id), principal.organization_id, principal.workspace_id),
+                ).fetchone()
         return DatasetVersion.model_validate_json(row["document"]) if row else None
 
-    def list_versions(self, dataset_id: UUID) -> list[DatasetVersion]:
-        """List DatasetVersions newest-first. | 列出 Dataset 的版本（新到旧）。"""
+    def list_versions(
+        self,
+        dataset_id: UUID,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> list[DatasetVersion]:
+        """List DatasetVersions newest-first inside the owning Dataset scope.
+
+        中文:按新到旧列出版本，并在提供 principal 时校验 Workspace 所有权。
+        """
 
         with self._lock:
-            rows = self._connection.execute(
-                "SELECT v.document FROM dataset_versions AS v "
-                "JOIN datasets AS d ON d.id = v.dataset_id "
-                "WHERE v.dataset_id = ? AND d.organization_id IS NULL "
-                "AND d.workspace_id IS NULL ORDER BY v.version DESC",
-                (str(dataset_id),),
-            ).fetchall()
+            if principal is None:
+                rows = self._connection.execute(
+                    "SELECT v.document FROM dataset_versions AS v "
+                    "JOIN datasets AS d ON d.id = v.dataset_id "
+                    "WHERE v.dataset_id = ? AND d.organization_id IS NULL "
+                    "AND d.workspace_id IS NULL ORDER BY v.version DESC",
+                    (str(dataset_id),),
+                ).fetchall()
+            else:
+                rows = self._connection.execute(
+                    "SELECT v.document FROM dataset_versions AS v "
+                    "JOIN datasets AS d ON d.id = v.dataset_id "
+                    "WHERE v.dataset_id = ? AND d.organization_id = ? "
+                    "AND d.workspace_id = ? ORDER BY v.version DESC",
+                    (str(dataset_id), principal.organization_id, principal.workspace_id),
+                ).fetchall()
         return [DatasetVersion.model_validate_json(row["document"]) for row in rows]
 
     def list_active_activity_tasks(self) -> list[dict[str, str]]:
