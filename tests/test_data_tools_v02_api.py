@@ -177,11 +177,29 @@ def test_mixed_parse_batch_persists_each_source_outcome(tmp_path: Path) -> None:
                             "application/x-ndjson",
                         ),
                     ),
-                    ("files[]", ("unknown.bin", b"\x00\xffbinary", "application/octet-stream")),
+                    (
+                        "files[]",
+                        (
+                            "unsupported.rtf",
+                            b"{\\rtf1\\ansi This file must not be treated as plain text.}",
+                            "text/plain",
+                        ),
+                    ),
+                    (
+                        "files[]",
+                        (
+                            "unrecognized.dat",
+                            b"unclassified but valid UTF-8 text",
+                            "application/octet-stream",
+                        ),
+                    ),
                 ],
             )
             assert upload.status_code == 200
-            source_ids = [item["source"]["id"] for item in upload.json()["items"]]
+            sources = [item["source"] for item in upload.json()["items"]]
+            source_ids = [source["id"] for source in sources]
+            assert sources[1]["mediaType"] == "application/rtf"
+            assert sources[2]["mediaType"] == "application/octet-stream"
 
             admitted = client.post(
                 f"/api/v1/datasets/{dataset_id}/processing-runs",
@@ -205,14 +223,18 @@ def test_mixed_parse_batch_persists_each_source_outcome(tmp_path: Path) -> None:
             )
             assert reports[source_ids[1]]["status"] == "FAILED"
             assert reports[source_ids[1]]["failure"]["code"] == "CATALYST_SOURCE_UNSUPPORTED"
+            assert reports[source_ids[2]]["status"] == "FAILED"
+            assert reports[source_ids[2]]["failure"]["code"] == "CATALYST_SOURCE_UNSUPPORTED"
 
             revisions = client.get(f"/api/v1/datasets/{dataset_id}/content-revisions").json()
             assert len(revisions) == 1
             assert revisions[0]["sourceRevisionIds"] == [source_ids[0]]
             queue = client.get(f"/api/v1/datasets/{dataset_id}/review-queue").json()
-            assert len(queue["items"]) == 1
-            assert queue["items"][0]["sourceRevisionId"] == source_ids[1]
-            assert queue["items"][0].get("contentRevisionId") is None
+            assert {item["sourceRevisionId"] for item in queue["items"]} == {
+                source_ids[1],
+                source_ids[2],
+            }
+            assert all(item.get("contentRevisionId") is None for item in queue["items"])
     finally:
         app.state.data_tools_service.close()
         app.state.catalyst_service.close()

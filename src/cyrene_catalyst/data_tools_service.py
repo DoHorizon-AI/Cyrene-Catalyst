@@ -249,6 +249,8 @@ def _detect_source_format(
         return "image/png", ImportFormat.TEXT
     if sample.startswith(b"\xff\xd8\xff"):
         return "image/jpeg", ImportFormat.TEXT
+    if sample.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"{\\rtf"):
+        return "application/rtf", ImportFormat.TEXT
     if zipfile.is_zipfile(path):
         try:
             with zipfile.ZipFile(path) as archive:
@@ -300,6 +302,8 @@ def _detect_source_format(
         return "text/csv", ImportFormat.CSV
     if suffix in {".md", ".markdown"} or request_type == "text/markdown":
         return "text/markdown", ImportFormat.TEXT
+    if suffix == ".rtf" or request_type == "application/rtf":
+        return "application/rtf", ImportFormat.TEXT
     if suffix == ".txt" or request_type == "text/plain":
         return "text/plain", ImportFormat.TEXT
 
@@ -338,10 +342,6 @@ def _detect_source_format(
                 return "application/x-ndjson", ImportFormat.JSONL
         except json.JSONDecodeError:
             pass  # diagnostic-allow: JSONL probing falls through to CSV or text classification
-    if nonempty and "," in nonempty[0] and len(nonempty) > 1:
-        return "text/csv", ImportFormat.CSV
-    if decoded:
-        return "text/plain", ImportFormat.TEXT
     return "application/octet-stream", ImportFormat.TEXT
 
 
