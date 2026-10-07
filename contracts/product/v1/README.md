@@ -68,6 +68,28 @@ The MVP intentionally executes synchronously and returns `201`. A future async
 adapter may honor RFC 7240 `Prefer: respond-async` and return `202` with
 `Location` naming the Product-owned DatasetVersion. It must not expose or create
 a second Kernel Operation API.
+
+## Data tools trial extension / 数据工具试用扩展
+
+The additive trial surface in `openapi.yaml` adds SourceRevision uploads,
+durable ProcessingRuns, immutable ContentRevisions with review/edit actions, and
+dual-package publication. Product still owns the same Dataset and DatasetVersion
+resources; there is no parallel dataset authority. New version metadata uses
+`data-tools.schema.json` and is optional on legacy DatasetVersions. Existing
+preparation, SFT/ALPACA_JSONL and Yield handoff contracts retain their wire
+shape. Content policy explicitly separates `knowledge_retrieval` and
+`model_training`; stable source-family identity keeps conversations in one SFT
+split, and generation receipts remain sidecar metadata outside learned text.
+New APIs expose ArtifactRefs and never expose executor staging paths.
+
+`openapi.yaml` 中新增的试用接口包括 SourceRevision 上传、持久化 ProcessingRun、带审核/
+编辑操作的不可变 ContentRevision，以及双包发布。Product 仍拥有同一 Dataset 和
+DatasetVersion 资源，不会创建并行的 Dataset 权威。新版本元数据定义在
+`data-tools.schema.json`，旧 DatasetVersion 中为可选字段。已有 preparation、
+SFT/ALPACA_JSONL 和 Yield 交接契约保持原线协议。内容策略明确区分
+`knowledge_retrieval` 与 `model_training`；稳定的 source-family identity 使同一 family
+的 conversation 留在同一 SFT split；generation receipt 作为旁路管理元数据，不进入学习文本。
+新接口只公开 ArtifactRef，不公开执行器暂存路径。
 ---
 <!-- Chinese Translation / 中文翻译 -->
 

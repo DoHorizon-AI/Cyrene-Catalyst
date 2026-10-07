@@ -119,6 +119,48 @@ is kept separately at
 [`workspace-internal.openapi.yaml`](../contracts/product/v1/workspace-internal.openapi.yaml).
 The caller's deployed secret binding and scope map still require deployment
 and caller-audit evidence.
+
+## Data Tools review and publication API
+
+The Data Tools routes add raw source revisions, reviewed block snapshots,
+durable processing runs, and knowledge/SFT package downloads while keeping
+`Dataset` and `DatasetVersion` as the existing Product authorities. Upload
+source bytes with `POST /api/v1/datasets/{datasetId}/sources?filename=...`.
+PDF and DOCX parse runs use `document.parsing.v1`. JSONL training records use
+Catalyst's bounded structured adapter: each row must contain `instruction` plus
+`output` (optional `input`) or a `conversations` array. Only these learned
+fields enter block text; `sourceFamily`, `conversationId`, `sampleId`, and
+`_acl` stay in block metadata or policy, and the original uploaded Artifact
+remains available.
+
+Create `parse`, `buildKnowledge`, `prepareSft`, or `generateQa` work through
+`POST /api/v1/datasets/{datasetId}/processing-runs`. The dataset-level GET route
+lists durable run status after reload. Parse creates a draft `ContentRevision`;
+edit a block with its expected revision ID, then approve the new revision using
+`POST /api/v1/content-revisions/{revisionId}/review`. Output permissions fail
+closed: each block must explicitly allow a profile, principal references, and
+the `knowledge_retrieval` or `model_training` purpose before it can appear in
+that output.
+
+Knowledge and SFT runs operate on the same approved revision. Publish their
+successful run IDs through `POST
+/api/v1/datasets/{datasetId}/data-tools/versions`; the returned canonical
+`DatasetVersion` includes additive `dataTools` package references. Download
+each package independently with `GET
+/api/v1/dataset-versions/{versionId}/data-tools/export?profile=knowledge` or
+`profile=sft`. The legacy `DatasetVersion.output` remains the train JSONL
+artifact for existing SFT/Yield consumers. A later approved revision makes
+older derived runs and published profiles report `stale: true`.
+
+The local service resolves direct Plugin bindings from
+`CYRENE_DOCUMENT_PARSING_CONNECTION_REF`,
+`CYRENE_KNOWLEDGE_PREPARATION_CONNECTION_REF`, and
+`CYRENE_DATASET_GENERATION_CONNECTION_REF`. The Data Tools trial token is
+`CYRENE_DATA_TOOLS_TOKEN`; its fixed identity may be configured with
+`CYRENE_DATA_TOOLS_ORGANIZATION_ID` and `CYRENE_DATA_TOOLS_WORKSPACE_ID`
+(defaults `data-tools-trial` and `data-tools`). When configured, every route
+except `/healthz` requires the Bearer token and Dataset child resources enforce
+the resolved Workspace scope. Keep the token in the server-side Client proxy.
 ---
 <!-- Chinese Translation / 中文翻译 -->
 
@@ -204,3 +246,36 @@ SHA-256 token 摘要及固定 scope 标识，并据此解析组织和 Workspace�
 私有契约单独保存在
 [`workspace-internal.openapi.yaml`](../contracts/product/v1/workspace-internal.openapi.yaml)。
 部署 secret 绑定和调用方 scope map 仍需部署及 caller-audit 证据。
+
+## Data Tools 审核与发布 API
+
+Data Tools 路由在保留既有 `Dataset` 和 `DatasetVersion` Product 权威的同时，增加
+原始来源版本、可审核内容快照、持久化运行以及知识/SFT 包下载。使用
+`POST /api/v1/datasets/{datasetId}/sources?filename=...` 上传来源字节。PDF 与 DOCX
+parse 运行调用 `document.parsing.v1`。JSONL 训练记录由 Catalyst 的有界结构化适配器
+处理：每行必须包含 `instruction` 和 `output`（可选 `input`），或 `conversations`
+数组。只有这些学习字段进入 block 文本；`sourceFamily`、`conversationId`、`sampleId`
+和 `_acl` 保留为 block 元数据或策略，原始上传 Artifact 仍保留。
+
+通过 `POST /api/v1/datasets/{datasetId}/processing-runs` 创建 `parse`、
+`buildKnowledge`、`prepareSft` 或 `generateQa` 运行。Dataset 级 GET 路由可在页面重载后
+读取持久化状态。Parse 会创建草稿 `ContentRevision`；编辑 block 时须提交预期 revision
+ID，再调用 `POST /api/v1/content-revisions/{revisionId}/review` 批准新修订。输出权限
+默认拒绝：每个 block 都须显式允许相应 profile、principal 引用以及
+`knowledge_retrieval` 或 `model_training` 用途，才能进入对应输出。
+
+知识与 SFT 运行使用同一已批准修订。将成功运行 ID 提交到
+`POST /api/v1/datasets/{datasetId}/data-tools/versions` 发布；响应是规范
+`DatasetVersion`，并附带 `dataTools` 包引用。可分别调用
+`GET /api/v1/dataset-versions/{versionId}/data-tools/export?profile=knowledge` 或
+`profile=sft` 下载完整包。旧 `DatasetVersion.output` 仍是 train JSONL Artifact，兼容
+既有 SFT/Yield 消费方。之后产生并批准的新修订会使旧派生运行和 profile 显示
+`stale: true`。
+
+本地服务从 `CYRENE_DOCUMENT_PARSING_CONNECTION_REF`、
+`CYRENE_KNOWLEDGE_PREPARATION_CONNECTION_REF` 和
+`CYRENE_DATASET_GENERATION_CONNECTION_REF` 解析直连 Plugin binding。Data Tools 试用
+token 为 `CYRENE_DATA_TOOLS_TOKEN`；固定身份可由
+`CYRENE_DATA_TOOLS_ORGANIZATION_ID` 与 `CYRENE_DATA_TOOLS_WORKSPACE_ID` 配置，默认值为
+`data-tools-trial` 和 `data-tools`。配置后，除 `/healthz` 外所有路由均要求 Bearer
+token，并对 Dataset 子资源执行 Workspace 范围校验。token 应由服务端 Client 代理持有。

@@ -24,7 +24,8 @@
     "source": {"$ref": "#/$defs/artifactRef"},
     "output": {"$ref": "#/$defs/artifactRef"},
     "engineBindingId": {"type": "string", "minLength": 1, "maxLength": 200},
-    "engineCapabilityType": {"const": "dataset.preparation.v1"},
+    "engineCapabilityType": {"enum": ["dataset.preparation.v1", "dataset.generation.v1"]},
+    "dataTools": {"$ref": "./data-tools.schema.json#/$defs/DatasetVersionDataTools"},
     "sourceRefs": {"type": "array", "items": {"type": "string", "format": "uri"}},
     "lineage": {
       "type": "array",

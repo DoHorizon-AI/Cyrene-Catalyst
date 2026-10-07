@@ -21,6 +21,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from cyrene_catalyst.artifacts import LocalArtifactPlane
+from cyrene_catalyst.data_tools_api import build_data_tools_router
+from cyrene_catalyst.data_tools_service import DataToolsService
+from cyrene_catalyst.data_tools_store import DataToolsStore
 from cyrene_catalyst.domain import (
     ConfigureMappingRequest,
     ConfigureSplitRequest,
@@ -50,6 +53,7 @@ from cyrene_catalyst.logging import (
 )
 from cyrene_catalyst.service import CatalystService
 from cyrene_catalyst.store import CatalystStore
+from cyrene_catalyst.trial_auth import install_trial_auth, trial_principal_from_request
 from cyrene_catalyst.workspace_auth import (
     WorkspaceServiceAuthenticator,
     WorkspaceServicePrincipal,
@@ -65,19 +69,34 @@ def create_app(
     engine: DataPreparationPort | None = None,
     yield_url: str | None = None,
     workspace_authenticator: WorkspaceServiceAuthenticator | None = None,
+    trial_authenticator: WorkspaceServiceAuthenticator | None = None,
+    trial_auth_required: bool = False,
 ) -> FastAPI:
     """Build an app with explicit durable adapters. | 使用显式持久化适配器创建应用。"""
 
     store = CatalystStore(database_path)
+    artifacts = LocalArtifactPlane(artifact_root)
     service = CatalystService(
         store=store,
-        artifacts=LocalArtifactPlane(artifact_root),
+        artifacts=artifacts,
         engine=engine or data_preparation_from_environment(),
     )
     app = FastAPI(title="Cyrene Catalyst Product API", version="1.0.0")
+    install_trial_auth(app, authenticator=trial_authenticator, required=trial_auth_required)
+    data_tools_store = DataToolsStore(database_path)
+    data_tools_service = DataToolsService(
+        datasets=store,
+        store=data_tools_store,
+        artifacts=artifacts,
+        preparation_engine=service.engine,
+    )
+    app.include_router(build_data_tools_router(data_tools_service))
     app.state.catalyst_store = store
     app.state.catalyst_service = service
+    app.state.data_tools_store = data_tools_store
+    app.state.data_tools_service = data_tools_service
     app.router.on_shutdown.append(service.close)
+    app.router.on_shutdown.append(data_tools_service.close)
     app.state.workspace_authenticator = (
         workspace_authenticator or WorkspaceServiceAuthenticator.from_json(None)
     )
@@ -287,9 +306,30 @@ def create_app(
         status_code=201,
     )
     def create_dataset(
+        request: Request,
         command: CreateDatasetRequest,
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=200),
     ) -> Dataset:
+        principal = trial_principal_from_request(request)
+        if principal is not None:
+            return service.create_workspace_dataset(command, idempotency_key, principal)
+        return service.create_dataset(command, idempotency_key)
+
+    @app.post(
+        "/datasets",
+        response_model=Dataset,
+        response_model_exclude_none=True,
+        status_code=201,
+        include_in_schema=False,
+    )
+    def create_dataset_root_alias(
+        request: Request,
+        command: CreateDatasetRequest,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=200),
+    ) -> Dataset:
+        principal = trial_principal_from_request(request)
+        if principal is not None:
+            return service.create_workspace_dataset(command, idempotency_key, principal)
         return service.create_dataset(command, idempotency_key)
 
     @app.post(
@@ -314,8 +354,39 @@ def create_app(
         response_model=Dataset,
         response_model_exclude_none=True,
     )
-    def get_dataset(dataset_id: Annotated[UUID, ApiPath(alias="datasetId")]) -> Dataset:
-        return service.get_dataset(dataset_id)
+    def get_dataset(
+        dataset_id: Annotated[UUID, ApiPath(alias="datasetId")], request: Request
+    ) -> Dataset:
+        principal = trial_principal_from_request(request)
+        dataset = store.get_dataset(dataset_id, principal)
+        if dataset is None:
+            raise CatalystError(
+                code="CATALYST_DATASET_NOT_FOUND",
+                title="Dataset not found",
+                detail="No Dataset exists with the requested id in this workspace.",
+                status=404,
+            )
+        return dataset
+
+    @app.get(
+        "/datasets/{datasetId}",
+        response_model=Dataset,
+        response_model_exclude_none=True,
+        include_in_schema=False,
+    )
+    def get_dataset_root_alias(
+        dataset_id: Annotated[UUID, ApiPath(alias="datasetId")], request: Request
+    ) -> Dataset:
+        principal = trial_principal_from_request(request)
+        dataset = store.get_dataset(dataset_id, principal)
+        if dataset is None:
+            raise CatalystError(
+                code="CATALYST_DATASET_NOT_FOUND",
+                title="Dataset not found",
+                detail="No Dataset exists with the requested id in this workspace.",
+                status=404,
+            )
+        return dataset
 
     @app.post(
         "/api/v1/datasets/{datasetId}/versions",
@@ -326,8 +397,10 @@ def create_app(
     def create_version(
         dataset_id: Annotated[UUID, ApiPath(alias="datasetId")],
         command: CreateDatasetVersionRequest,
+        request: Request,
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=200),
     ) -> DatasetVersion:
+        data_tools_service.require_dataset(dataset_id, trial_principal_from_request(request))
         return service.create_version(dataset_id, command, idempotency_key)
 
     @app.get(
@@ -335,8 +408,10 @@ def create_app(
         response_model=DatasetVersion,
         response_model_exclude_none=True,
     )
-    def get_version(version_id: Annotated[UUID, ApiPath(alias="versionId")]) -> DatasetVersion:
-        return service.get_version(version_id)
+    def get_version(
+        version_id: Annotated[UUID, ApiPath(alias="versionId")], request: Request
+    ) -> DatasetVersion:
+        return data_tools_service.get_version(version_id, trial_principal_from_request(request))
 
     @app.get(
         "/api/v1/dataset-versions/{versionId}/preview",
@@ -345,9 +420,11 @@ def create_app(
     )
     def preview_version(
         version_id: Annotated[UUID, ApiPath(alias="versionId")],
+        request: Request,
         limit: Annotated[int, Query(ge=1, le=100)] = 10,
         offset: Annotated[int, Query(ge=0)] = 0,
     ) -> DatasetPreview:
+        data_tools_service.get_version(version_id, trial_principal_from_request(request))
         return service.preview_version(version_id, limit=limit, offset=offset)
 
     @app.get("/", include_in_schema=False, response_class=HTMLResponse)
@@ -359,8 +436,17 @@ def create_app(
         response_model=list[Dataset],
         response_model_exclude_none=True,
     )
-    def list_datasets() -> list[Dataset]:
-        return service.list_datasets()
+    def list_datasets(request: Request) -> list[Dataset]:
+        return store.list_datasets(trial_principal_from_request(request))
+
+    @app.get(
+        "/datasets",
+        response_model=list[Dataset],
+        response_model_exclude_none=True,
+        include_in_schema=False,
+    )
+    def list_datasets_root_alias(request: Request) -> list[Dataset]:
+        return store.list_datasets(trial_principal_from_request(request))
 
     @app.get(
         "/internal/workspace/v1/datasets",
@@ -381,8 +467,9 @@ def create_app(
     )
     def list_versions(
         dataset_id: Annotated[UUID, ApiPath(alias="datasetId")],
+        request: Request,
     ) -> list[DatasetVersion]:
-        return service.list_versions(dataset_id)
+        return data_tools_service.list_versions(dataset_id, trial_principal_from_request(request))
 
     @app.get(
         "/api/v1/datasets/{datasetId}/preparations",

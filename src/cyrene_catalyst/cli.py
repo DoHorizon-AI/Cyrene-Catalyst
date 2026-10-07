@@ -22,6 +22,11 @@ import httpx
 import uvicorn
 
 from cyrene_catalyst.api import create_app
+from cyrene_catalyst.trial_auth import (
+    TrialAuthConfigError,
+    trial_authenticator_from_environment,
+    validate_trial_listener,
+)
 from cyrene_catalyst.workspace_auth import (
     WorkspaceServiceAuthConfigError,
     WorkspaceServiceAuthenticator,
@@ -57,6 +62,18 @@ def _serve(arguments: argparse.Namespace) -> int:
     base = arguments.home.expanduser()
     base.mkdir(parents=True, exist_ok=True)
     try:
+        trial_authenticator = trial_authenticator_from_environment()
+    except TrialAuthConfigError as exc:
+        raise SystemExit(str(exc)) from exc
+    try:
+        remote_listener = validate_trial_listener(
+            arguments.host,
+            allow_remote=arguments.allow_remote,
+            authenticator=trial_authenticator,
+        )
+    except TrialAuthConfigError as exc:
+        raise SystemExit(str(exc)) from exc
+    try:
         workspace_authenticator = WorkspaceServiceAuthenticator.from_json(
             os.environ.get("CYRENE_WORKSPACE_SERVICE_AUTH_JSON")
         )
@@ -67,6 +84,8 @@ def _serve(arguments: argparse.Namespace) -> int:
         artifact_root=arguments.artifact_root or base / "artifacts",
         yield_url=arguments.yield_url,
         workspace_authenticator=workspace_authenticator,
+        trial_authenticator=trial_authenticator,
+        trial_auth_required=remote_listener,
     )
     uvicorn.run(app, host=arguments.host, port=arguments.port, access_log=False)
     return 0
@@ -151,6 +170,7 @@ def parser() -> argparse.ArgumentParser:
     serve.add_argument("--yield-url")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8014)
+    serve.add_argument("--allow-remote", action="store_true")
 
     dataset = commands.add_parser("dataset", help="Prepare and publish dataset versions")
     dataset_commands = dataset.add_subparsers(dest="dataset_command", required=True)
