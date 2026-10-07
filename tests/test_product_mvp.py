@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
@@ -300,6 +301,32 @@ def test_artifact_kind_is_an_open_producer_owned_string() -> None:
     assert "enum" not in kind_schema
     assert kind_schema["minLength"] == 1
     assert kind_schema["maxLength"] == 128
+
+
+def test_product_boundary_guard_allows_non_artifact_kind_enums() -> None:
+    product_root = Path(__file__).parents[1]
+    data_tools = json.loads(
+        (product_root / "contracts/product/v1/data-tools.schema.json").read_text()
+    )
+    assert data_tools["$defs"]["ParserDiagnostic"]["properties"]["kind"]["enum"] == [
+        "parser",
+        "ocr",
+    ]
+    assert data_tools["$defs"]["ReviewItem"]["properties"]["kind"]["enum"] == [
+        "PARSER_WARNING",
+        "OCR_WARNING",
+        "PARSE_FAILURE",
+        "UNSUPPORTED_SOURCE",
+    ]
+
+    result = subprocess.run(
+        ["bash", str(product_root / "tooling/ci/check-product-boundary.sh")],
+        cwd=product_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_duckdb_publish_idempotency_and_restart(tmp_path: Path) -> None:

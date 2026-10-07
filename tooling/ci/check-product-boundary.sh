@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Catalyst may use the pinned Platform Artifact SDK only inside its adapter.
 # This guard rejects Product-wide SDK leakage, environment bridges, closed
-# ArtifactKind vocabularies outside that adapter, and concrete data processing.
+# ArtifactRef.kind vocabularies outside that adapter, and concrete data processing.
 guard_path='tooling/ci/check-product-boundary.sh'
 violations=0
 
@@ -70,16 +70,41 @@ tracked_json = subprocess.run(
 ).stdout.splitlines()
 
 
-def visit(value, path: str) -> None:
+# Other schemas use `kind` for domain discriminators; only inspect ArtifactRef
+# and explicitly named ArtifactKind definitions for a closed vocabulary.
+def visit(
+    value,
+    path: str,
+    artifact_ref_context: bool = False,
+    artifact_kind_context: bool = False,
+) -> None:
     if isinstance(value, dict):
-        kind = value.get("kind")
-        if isinstance(kind, dict) and "enum" in kind:
-            violations.append(path + ".kind.enum")
+        artifact_ref_context = (
+            artifact_ref_context
+            or value.get("title") == "ArtifactRef"
+            or str(value.get("$id", "")).endswith("/artifact_ref.schema.json")
+        )
+        artifact_kind_context = (
+            artifact_kind_context
+            or value.get("title") == "ArtifactKind"
+            or path.rsplit(".", maxsplit=1)[-1] in {"ArtifactKind", "artifactKind"}
+        )
+        properties = value.get("properties")
+        kind = properties.get("kind") if isinstance(properties, dict) else None
+        if artifact_ref_context and isinstance(kind, dict) and "enum" in kind:
+            violations.append(path + ".properties.kind.enum")
+        if artifact_kind_context and "enum" in value:
+            violations.append(path + ".enum")
         for key, child in value.items():
-            visit(child, f"{path}.{key}")
+            visit(
+                child,
+                f"{path}.{key}",
+                artifact_ref_context or key in {"ArtifactRef", "artifactRef"},
+                artifact_kind_context,
+            )
     elif isinstance(value, list):
         for index, child in enumerate(value):
-            visit(child, f"{path}[{index}]")
+            visit(child, f"{path}[{index}]", artifact_ref_context, artifact_kind_context)
 
 
 for name in tracked_json:
