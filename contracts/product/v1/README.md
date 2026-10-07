@@ -82,6 +82,16 @@ shape. Content policy explicitly separates `knowledge_retrieval` and
 split, and generation receipts remain sidecar metadata outside learned text.
 New APIs expose ArtifactRefs and never expose executor staging paths.
 
+Catalyst v0.2 adds independent multipart batch uploads at
+`POST /api/v1/datasets/{datasetId}/sources/batch`, durable per-source parse
+reports, and a parser/OCR review queue. Each source report retains warnings,
+diagnostics, unsupported-content details, and parser output ArtifactRefs. Batch
+partial success is preserved per file. Parser/OCR issues bound to a revision
+must be acknowledged before approval; rejecting an issue remains blocking.
+Generated drafts remain ordinary DRAFT ContentRevisions and use the existing
+revision review route. See the task-level [coordination contract](../../../../CONTRACT.md)
+for v0.2 DTOs, limits, and provenance fields.
+
 `openapi.yaml` 中新增的试用接口包括 SourceRevision 上传、持久化 ProcessingRun、带审核/
 编辑操作的不可变 ContentRevision，以及双包发布。Product 仍拥有同一 Dataset 和
 DatasetVersion 资源，不会创建并行的 Dataset 权威。新版本元数据定义在
@@ -90,6 +100,13 @@ SFT/ALPACA_JSONL 和 Yield 交接契约保持原线协议。内容策略明确�
 `knowledge_retrieval` 与 `model_training`；稳定的 source-family identity 使同一 family
 的 conversation 留在同一 SFT split；generation receipt 作为旁路管理元数据，不进入学习文本。
 新接口只公开 ArtifactRef，不公开执行器暂存路径。
+
+Catalyst v0.2 增加独立 multipart 批量上传、逐来源持久化解析报告，以及 parser/OCR
+审核队列。每条报告保留 warnings、diagnostics、不支持内容明细和 parser 输出
+ArtifactRef；批次部分成功按文件分别记录。绑定到修订版的 parser/OCR 问题必须先
+acknowledge 才能审批；reject 仍会阻断。生成草稿继续使用普通 DRAFT ContentRevision，
+并通过现有 revision review 路由审批。v0.2 DTO、上限和来源定位字段见 task-level
+[协调契约](../../../../CONTRACT.md)。
 ---
 <!-- Chinese Translation / 中文翻译 -->
 

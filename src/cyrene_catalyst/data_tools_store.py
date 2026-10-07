@@ -2,9 +2,9 @@
 ┌─────────────────────────────────────────────────────────────────────┐
 │  📄 data_tools_store.py                                             │
 │  Module: cyrene_catalyst.data_tools_store                           │
-│  Role: SQLite persistence for Data Tools child resources and runs.  │
+│  Role: SQLite persistence for sources, parse review, and runs.       │
 │                                                                     │
-│  模块职责：持久化来源、内容修订、版本标注与处理运行，不创建 Dataset。   │
+│  模块职责：持久化来源、解析审核、内容修订与处理运行，不创建 Dataset。   │
 └─────────────────────────────────────────────────────────────────────┘
 """
 
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timedelta
 from pathlib import Path
 from threading import RLock
 from uuid import UUID
@@ -24,6 +25,11 @@ from cyrene_catalyst.data_tools_domain import (
     ProcessingRun,
     ProcessingRunState,
     ProcessingStageState,
+    ReviewItem,
+    ReviewItemResolution,
+    ReviewItemState,
+    SourceParseReport,
+    SourceParseReportState,
     SourceRevision,
 )
 from cyrene_catalyst.domain import utc_now
@@ -105,6 +111,71 @@ class DataToolsStore:
                     PRIMARY KEY(dataset_id, stage_key, input_digest, recipe_digest),
                     FOREIGN KEY(dataset_id) REFERENCES datasets(id) ON DELETE CASCADE
                 );
+
+                -- Composite parent keys prevent a child receipt from mixing
+                -- one Dataset with another Dataset's source, revision, or run.
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_data_tool_sources_dataset_id
+                    ON data_tool_source_revisions(dataset_id, id);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_data_tool_content_dataset_id
+                    ON data_tool_content_revisions(dataset_id, id);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_data_tool_runs_dataset_id
+                    ON data_tool_processing_runs(dataset_id, id);
+
+                CREATE TABLE IF NOT EXISTS data_tool_source_parse_reports (
+                    id TEXT PRIMARY KEY,
+                    dataset_id TEXT NOT NULL,
+                    source_revision_id TEXT NOT NULL,
+                    processing_run_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    document TEXT NOT NULL,
+                    UNIQUE(processing_run_id, source_revision_id),
+                    UNIQUE(dataset_id, id),
+                    UNIQUE(dataset_id, id, source_revision_id),
+                    FOREIGN KEY(dataset_id) REFERENCES datasets(id) ON DELETE CASCADE,
+                    FOREIGN KEY(dataset_id, source_revision_id)
+                        REFERENCES data_tool_source_revisions(dataset_id, id) ON DELETE CASCADE,
+                    FOREIGN KEY(dataset_id, processing_run_id)
+                        REFERENCES data_tool_processing_runs(dataset_id, id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_data_tool_parse_reports_dataset
+                    ON data_tool_source_parse_reports(dataset_id, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_data_tool_parse_reports_source
+                    ON data_tool_source_parse_reports(
+                        dataset_id, source_revision_id, updated_at DESC
+                    );
+                CREATE INDEX IF NOT EXISTS idx_data_tool_parse_reports_run
+                    ON data_tool_source_parse_reports(dataset_id, processing_run_id);
+
+                CREATE TABLE IF NOT EXISTS data_tool_review_items (
+                    id TEXT PRIMARY KEY,
+                    dataset_id TEXT NOT NULL,
+                    source_parse_report_id TEXT NOT NULL,
+                    source_revision_id TEXT NOT NULL,
+                    processing_run_id TEXT NOT NULL,
+                    content_revision_id TEXT,
+                    state TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    document TEXT NOT NULL,
+                    UNIQUE(dataset_id, id),
+                    FOREIGN KEY(dataset_id) REFERENCES datasets(id) ON DELETE CASCADE,
+                    FOREIGN KEY(dataset_id, source_parse_report_id, source_revision_id)
+                        REFERENCES data_tool_source_parse_reports(
+                            dataset_id, id, source_revision_id
+                        )
+                        ON DELETE CASCADE,
+                    FOREIGN KEY(dataset_id, source_revision_id)
+                        REFERENCES data_tool_source_revisions(dataset_id, id) ON DELETE CASCADE,
+                    FOREIGN KEY(dataset_id, processing_run_id)
+                        REFERENCES data_tool_processing_runs(dataset_id, id) ON DELETE CASCADE,
+                    FOREIGN KEY(dataset_id, content_revision_id)
+                        REFERENCES data_tool_content_revisions(dataset_id, id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_data_tool_review_items_revision
+                    ON data_tool_review_items(dataset_id, content_revision_id, state, created_at);
+                CREATE INDEX IF NOT EXISTS idx_data_tool_review_items_queue
+                    ON data_tool_review_items(dataset_id, state, created_at);
                 """
             )
 
@@ -230,6 +301,777 @@ class DataToolsStore:
             ).fetchall()
         return [SourceRevision.model_validate_json(row["document"]) for row in rows]
 
+    @staticmethod
+    def _report_transitions() -> dict[SourceParseReportState, set[SourceParseReportState]]:
+        """Return allowed monotonic parse-report transitions. | 解析报告状态转移。"""
+
+        terminal = {
+            SourceParseReportState.SUCCEEDED,
+            SourceParseReportState.WARNING,
+            SourceParseReportState.FAILED,
+            SourceParseReportState.INTERRUPTED,
+            SourceParseReportState.CANCELLED,
+        }
+        return {
+            SourceParseReportState.QUEUED: {
+                SourceParseReportState.QUEUED,
+                SourceParseReportState.RUNNING,
+                *terminal,
+            },
+            SourceParseReportState.RUNNING: {
+                SourceParseReportState.RUNNING,
+                *terminal,
+            },
+            **{state: {state} for state in terminal},
+        }
+
+    def _validate_report_links(self, report: SourceParseReport) -> None:
+        """Validate same-Dataset source, run, and optional revision links."""
+
+        source = self._connection.execute(
+            "SELECT dataset_id FROM data_tool_source_revisions WHERE id = ?",
+            (str(report.source_revision_id),),
+        ).fetchone()
+        run_row = self._connection.execute(
+            "SELECT dataset_id, document FROM data_tool_processing_runs WHERE id = ?",
+            (str(report.processing_run_id),),
+        ).fetchone()
+        if (
+            source is None
+            or source["dataset_id"] != str(report.dataset_id)
+            or run_row is None
+            or run_row["dataset_id"] != str(report.dataset_id)
+        ):
+            raise ValueError("SourceParseReport source and run must belong to its Dataset.")
+        run = ProcessingRun.model_validate_json(run_row["document"])
+        if report.source_revision_id not in run.source_revision_ids:
+            raise ValueError("SourceParseReport source must be selected by its ProcessingRun.")
+        if report.content_revision_id is not None:
+            revision_row = self._connection.execute(
+                "SELECT dataset_id, document FROM data_tool_content_revisions WHERE id = ?",
+                (str(report.content_revision_id),),
+            ).fetchone()
+            if revision_row is None or revision_row["dataset_id"] != str(report.dataset_id):
+                raise ValueError("SourceParseReport ContentRevision must belong to its Dataset.")
+            revision = ContentRevision.model_validate_json(revision_row["document"])
+            if report.source_revision_id not in revision.source_revision_ids:
+                raise ValueError(
+                    "SourceParseReport source must be included in its ContentRevision."
+                )
+
+    def save_source_parse_report(
+        self,
+        report: SourceParseReport,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> SourceParseReport:
+        """Insert or advance one source's report within the caller's scope."""
+
+        return self._save_source_parse_report(report, principal, trusted_worker=False)
+
+    def save_source_parse_report_for_worker(
+        self,
+        report: SourceParseReport,
+    ) -> SourceParseReport:
+        """Persist one source report from a trusted parser worker."""
+
+        return self._save_source_parse_report(report, None, trusted_worker=True)
+
+    def _save_source_parse_report(
+        self,
+        report: SourceParseReport,
+        principal: WorkspaceServicePrincipal | None,
+        *,
+        trusted_worker: bool,
+    ) -> SourceParseReport:
+        """Upsert by the immutable run/source pair and enforce lifecycle order."""
+
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                saved = self._save_source_parse_report_locked(
+                    report,
+                    principal,
+                    trusted_worker=trusted_worker,
+                )
+                self._connection.commit()
+                return saved
+            except Exception:
+                self._connection.rollback()
+                raise
+
+    def _save_source_parse_report_locked(
+        self,
+        report: SourceParseReport,
+        principal: WorkspaceServicePrincipal | None,
+        *,
+        trusted_worker: bool,
+    ) -> SourceParseReport:
+        """Upsert one report while the caller owns a write transaction."""
+
+        if trusted_worker:
+            self._require_dataset_for_worker(report.dataset_id)
+        else:
+            self._require_dataset(report.dataset_id, principal)
+        self._validate_report_links(report)
+        row = self._connection.execute(
+            "SELECT id, document FROM data_tool_source_parse_reports "
+            "WHERE processing_run_id = ? AND source_revision_id = ?",
+            (str(report.processing_run_id), str(report.source_revision_id)),
+        ).fetchone()
+        if row is None:
+            self._connection.execute(
+                "INSERT INTO data_tool_source_parse_reports "
+                "(id,dataset_id,source_revision_id,processing_run_id,status,"
+                "created_at,updated_at,document) VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    str(report.id),
+                    str(report.dataset_id),
+                    str(report.source_revision_id),
+                    str(report.processing_run_id),
+                    report.status.value,
+                    report.created_at.isoformat(),
+                    report.updated_at.isoformat(),
+                    report.model_dump_json(by_alias=True, exclude_none=True),
+                ),
+            )
+            return report
+
+        current = SourceParseReport.model_validate_json(row["document"])
+        if current.id != report.id or current.dataset_id != report.dataset_id:
+            raise ValueError("SourceParseReport identity cannot change for one run/source pair.")
+        if current.created_at != report.created_at:
+            raise ValueError("SourceParseReport createdAt is immutable.")
+        if report == current:
+            return current
+        allowed = self._report_transitions()[current.status]
+        if report.status not in allowed:
+            raise ValueError(
+                f"SourceParseReport cannot transition from {current.status.value} "
+                f"to {report.status.value}."
+            )
+        if (
+            current.content_revision_id is not None
+            and report.content_revision_id != current.content_revision_id
+        ):
+            raise ValueError("SourceParseReport ContentRevision link is immutable once set.")
+        report = self._monotonic_report_update(report, current)
+        if report.updated_at < current.updated_at:
+            raise ValueError("SourceParseReport updatedAt cannot move backwards.")
+        terminal = {
+            SourceParseReportState.SUCCEEDED,
+            SourceParseReportState.WARNING,
+            SourceParseReportState.FAILED,
+            SourceParseReportState.INTERRUPTED,
+            SourceParseReportState.CANCELLED,
+        }
+        if current.status in terminal and report.status == current.status:
+            expected = current.model_copy(
+                update={
+                    "content_revision_id": report.content_revision_id,
+                    "updated_at": report.updated_at,
+                    "resource_version": report.resource_version,
+                }
+            )
+            if report != expected:
+                raise ValueError("Terminal SourceParseReport details are immutable.")
+        saved = report.model_copy(update={"resource_version": current.resource_version + 1})
+        self._connection.execute(
+            "UPDATE data_tool_source_parse_reports SET status=?,updated_at=?,document=? "
+            "WHERE id=? AND dataset_id=?",
+            (
+                saved.status.value,
+                saved.updated_at.isoformat(),
+                saved.model_dump_json(by_alias=True, exclude_none=True),
+                str(saved.id),
+                str(saved.dataset_id),
+            ),
+        )
+        return saved
+
+    @staticmethod
+    def _monotonic_report_update(
+        report: SourceParseReport,
+        current: SourceParseReport,
+    ) -> SourceParseReport:
+        """Clamp report event times when the host UTC wall clock steps backwards."""
+
+        tick = timedelta(microseconds=1)
+        updated_at = max(report.updated_at, utc_now(), current.updated_at + tick)
+        updates: dict[str, datetime] = {"updated_at": updated_at}
+
+        started_at = report.started_at or current.started_at
+        if started_at is not None and current.started_at is None:
+            started_at = max(started_at, current.created_at + tick)
+            updates["started_at"] = started_at
+
+        terminal = {
+            SourceParseReportState.SUCCEEDED,
+            SourceParseReportState.WARNING,
+            SourceParseReportState.FAILED,
+            SourceParseReportState.INTERRUPTED,
+            SourceParseReportState.CANCELLED,
+        }
+        if report.status in terminal and current.status not in terminal:
+            earliest_finish = max(updated_at, started_at or current.created_at)
+            finished_at = max(report.finished_at or utc_now(), earliest_finish)
+            updates["finished_at"] = finished_at
+            updates["updated_at"] = max(updated_at, finished_at)
+
+        return report.model_copy(update=updates)
+
+    def get_source_parse_report(
+        self,
+        report_id: UUID,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> SourceParseReport | None:
+        """Read a report through its parent Dataset ownership. | 按父 Dataset 范围读取报告。"""
+
+        predicate, parameters = self._scope(principal)
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT r.document FROM data_tool_source_parse_reports AS r "
+                "JOIN datasets AS d ON d.id = r.dataset_id "
+                f"WHERE r.id = ? AND {predicate}",
+                (str(report_id), *parameters),
+            ).fetchone()
+        return SourceParseReport.model_validate_json(row["document"]) if row else None
+
+    def get_source_parse_report_for_worker(
+        self,
+        report_id: UUID,
+    ) -> SourceParseReport | None:
+        """Read a report for trusted asynchronous recovery."""
+
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT r.document FROM data_tool_source_parse_reports AS r "
+                "JOIN datasets AS d ON d.id = r.dataset_id WHERE r.id = ?",
+                (str(report_id),),
+            ).fetchone()
+        return SourceParseReport.model_validate_json(row["document"]) if row else None
+
+    def list_source_parse_reports(
+        self,
+        dataset_id: UUID,
+        source_revision_id: UUID | None = None,
+        processing_run_id: UUID | None = None,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> list[SourceParseReport]:
+        """List scoped per-source reports, optionally filtered by source or run."""
+
+        predicate, parameters = self._scope(principal)
+        filters = ["r.dataset_id = ?", predicate]
+        values: list[str] = [str(dataset_id), *parameters]
+        if source_revision_id is not None:
+            filters.append("r.source_revision_id = ?")
+            values.append(str(source_revision_id))
+        if processing_run_id is not None:
+            filters.append("r.processing_run_id = ?")
+            values.append(str(processing_run_id))
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT r.document FROM data_tool_source_parse_reports AS r "
+                "JOIN datasets AS d ON d.id = r.dataset_id WHERE "
+                + " AND ".join(filters)
+                + " ORDER BY r.created_at DESC, r.id",
+                values,
+            ).fetchall()
+        return [SourceParseReport.model_validate_json(row["document"]) for row in rows]
+
+    def list_source_parse_reports_for_worker(
+        self,
+        dataset_id: UUID,
+        run_id: UUID | None = None,
+    ) -> list[SourceParseReport]:
+        """List reports for trusted batch processing or recovery."""
+
+        with self._lock:
+            self._require_dataset_for_worker(dataset_id)
+            if run_id is None:
+                rows = self._connection.execute(
+                    "SELECT document FROM data_tool_source_parse_reports "
+                    "WHERE dataset_id = ? ORDER BY created_at DESC, id",
+                    (str(dataset_id),),
+                ).fetchall()
+            else:
+                rows = self._connection.execute(
+                    "SELECT document FROM data_tool_source_parse_reports "
+                    "WHERE dataset_id = ? AND processing_run_id = ? "
+                    "ORDER BY created_at DESC, id",
+                    (str(dataset_id), str(run_id)),
+                ).fetchall()
+        return [SourceParseReport.model_validate_json(row["document"]) for row in rows]
+
+    def mark_parse_reports_interrupted_for_worker(
+        self,
+        run_id: UUID,
+        at: datetime | None = None,
+    ) -> list[SourceParseReport]:
+        """Mark unfinished per-source work interrupted after its run stops."""
+
+        run = self.get_run_for_worker(run_id)
+        if run is None:
+            return []
+        timestamp = at or utc_now()
+        active = {
+            SourceParseReportState.QUEUED,
+            SourceParseReportState.RUNNING,
+        }
+        updated: list[SourceParseReport] = []
+        for report in self.list_source_parse_reports_for_worker(run.dataset_id, run_id):
+            if report.status not in active:
+                continue
+            updated.append(
+                self.save_source_parse_report_for_worker(
+                    report.model_copy(
+                        update={
+                            "status": SourceParseReportState.INTERRUPTED,
+                            "updated_at": timestamp,
+                            "finished_at": timestamp,
+                            "resource_version": report.resource_version + 1,
+                        }
+                    )
+                )
+            )
+        return updated
+
+    def _validate_review_item_links(self, item: ReviewItem) -> None:
+        """Validate that an issue matches its report and optional revision."""
+
+        report_row = self._connection.execute(
+            "SELECT dataset_id, document FROM data_tool_source_parse_reports WHERE id = ?",
+            (str(item.source_parse_report_id),),
+        ).fetchone()
+        if report_row is None or report_row["dataset_id"] != str(item.dataset_id):
+            raise ValueError("ReviewItem report must belong to its Dataset.")
+        report = SourceParseReport.model_validate_json(report_row["document"])
+        if (
+            report.source_revision_id != item.source_revision_id
+            or report.processing_run_id != item.processing_run_id
+            or report.content_revision_id != item.content_revision_id
+        ):
+            raise ValueError("ReviewItem lineage must match its SourceParseReport.")
+        if item.content_revision_id is not None:
+            revision_row = self._connection.execute(
+                "SELECT dataset_id, document FROM data_tool_content_revisions WHERE id = ?",
+                (str(item.content_revision_id),),
+            ).fetchone()
+            if revision_row is None or revision_row["dataset_id"] != str(item.dataset_id):
+                raise ValueError("ReviewItem ContentRevision must belong to its Dataset.")
+            revision = ContentRevision.model_validate_json(revision_row["document"])
+            if item.source_revision_id not in revision.source_revision_ids:
+                raise ValueError("ReviewItem source must be included in its ContentRevision.")
+            if revision.state == ContentRevisionState.APPROVED:
+                raise ValueError("ReviewItems cannot be added to an approved ContentRevision.")
+
+    def save_review_item(
+        self,
+        item: ReviewItem,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> ReviewItem:
+        """Insert an open issue idempotently within the caller's Dataset scope."""
+
+        return self._save_review_item(item, principal, trusted_worker=False)
+
+    def save_review_item_for_worker(self, item: ReviewItem) -> ReviewItem:
+        """Persist one issue from a trusted parser worker."""
+
+        return self._save_review_item(item, None, trusted_worker=True)
+
+    def _save_review_item(
+        self,
+        item: ReviewItem,
+        principal: WorkspaceServicePrincipal | None,
+        *,
+        trusted_worker: bool,
+    ) -> ReviewItem:
+        """Insert or return an identical issue, rejecting identity rewrites."""
+
+        if item.state != ReviewItemState.OPEN or item.resolved_at is not None:
+            raise ValueError("New ReviewItems must start OPEN.")
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                saved = self._save_review_item_locked(
+                    item,
+                    principal,
+                    trusted_worker=trusted_worker,
+                )
+                self._connection.commit()
+                return saved
+            except Exception:
+                self._connection.rollback()
+                raise
+
+    def _save_review_item_locked(
+        self,
+        item: ReviewItem,
+        principal: WorkspaceServicePrincipal | None,
+        *,
+        trusted_worker: bool,
+    ) -> ReviewItem:
+        """Insert one issue while the caller owns a write transaction."""
+
+        if item.state != ReviewItemState.OPEN or item.resolved_at is not None:
+            raise ValueError("New ReviewItems must start OPEN.")
+        if trusted_worker:
+            self._require_dataset_for_worker(item.dataset_id)
+        else:
+            self._require_dataset(item.dataset_id, principal)
+        self._validate_review_item_links(item)
+        row = self._connection.execute(
+            "SELECT document FROM data_tool_review_items WHERE id = ?",
+            (str(item.id),),
+        ).fetchone()
+        if row is not None:
+            current = ReviewItem.model_validate_json(row["document"])
+            if current != item:
+                raise ValueError("ReviewItem is immutable after creation; use resolve_review_item.")
+            return current
+        self._connection.execute(
+            "INSERT INTO data_tool_review_items "
+            "(id,dataset_id,source_parse_report_id,source_revision_id,processing_run_id,"
+            "content_revision_id,state,created_at,document) VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                str(item.id),
+                str(item.dataset_id),
+                str(item.source_parse_report_id),
+                str(item.source_revision_id),
+                str(item.processing_run_id),
+                str(item.content_revision_id) if item.content_revision_id else None,
+                item.state.value,
+                item.created_at.isoformat(),
+                item.model_dump_json(by_alias=True, exclude_none=True),
+            ),
+        )
+        return item
+
+    def get_review_item(
+        self,
+        item_id: UUID,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> ReviewItem | None:
+        """Read one issue through its parent Dataset ownership. | 按范围读取审核项。"""
+
+        predicate, parameters = self._scope(principal)
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT i.document FROM data_tool_review_items AS i "
+                "JOIN datasets AS d ON d.id = i.dataset_id "
+                f"WHERE i.id = ? AND {predicate}",
+                (str(item_id), *parameters),
+            ).fetchone()
+        return ReviewItem.model_validate_json(row["document"]) if row else None
+
+    def get_review_item_for_worker(self, item_id: UUID) -> ReviewItem | None:
+        """Read one issue for trusted background work."""
+
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT i.document FROM data_tool_review_items AS i "
+                "JOIN datasets AS d ON d.id = i.dataset_id WHERE i.id = ?",
+                (str(item_id),),
+            ).fetchone()
+        return ReviewItem.model_validate_json(row["document"]) if row else None
+
+    def list_review_items(
+        self,
+        dataset_id: UUID,
+        state: ReviewItemState | None = None,
+        source_revision_id: UUID | None = None,
+        content_revision_id: UUID | None = None,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> list[ReviewItem]:
+        """List review issues filtered by Dataset, state, source, or revision."""
+
+        predicate, parameters = self._scope(principal)
+        filters = ["i.dataset_id = ?", predicate]
+        values: list[str] = [str(dataset_id), *parameters]
+        if state is not None:
+            filters.append("i.state = ?")
+            values.append(state.value)
+        if source_revision_id is not None:
+            filters.append("i.source_revision_id = ?")
+            values.append(str(source_revision_id))
+        if content_revision_id is not None:
+            filters.append("i.content_revision_id = ?")
+            values.append(str(content_revision_id))
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT i.document FROM data_tool_review_items AS i "
+                "JOIN datasets AS d ON d.id = i.dataset_id WHERE "
+                + " AND ".join(filters)
+                + " ORDER BY i.created_at, i.id",
+                values,
+            ).fetchall()
+        return [ReviewItem.model_validate_json(row["document"]) for row in rows]
+
+    def list_review_items_for_worker(
+        self,
+        dataset_id: UUID,
+        run_id: UUID | None = None,
+    ) -> list[ReviewItem]:
+        """List review issues for trusted batch execution or recovery."""
+
+        with self._lock:
+            self._require_dataset_for_worker(dataset_id)
+            if run_id is None:
+                rows = self._connection.execute(
+                    "SELECT document FROM data_tool_review_items "
+                    "WHERE dataset_id = ? ORDER BY created_at, id",
+                    (str(dataset_id),),
+                ).fetchall()
+            else:
+                rows = self._connection.execute(
+                    "SELECT document FROM data_tool_review_items "
+                    "WHERE dataset_id = ? AND processing_run_id = ? ORDER BY created_at, id",
+                    (str(dataset_id), str(run_id)),
+                ).fetchall()
+        return [ReviewItem.model_validate_json(row["document"]) for row in rows]
+
+    def resolve_review_item(
+        self,
+        item_id: UUID,
+        action: ReviewItemResolution,
+        note: str | None = None,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> ReviewItem:
+        """Apply one immutable human disposition to an open review issue."""
+
+        return self._resolve_review_item(
+            item_id,
+            action,
+            note,
+            principal,
+            trusted_worker=False,
+        )
+
+    def resolve_review_item_for_worker(
+        self,
+        item_id: UUID,
+        action: ReviewItemResolution,
+        note: str | None = None,
+    ) -> ReviewItem:
+        """Apply a disposition from a trusted background workflow."""
+
+        return self._resolve_review_item(item_id, action, note, None, trusted_worker=True)
+
+    def _resolve_review_item(
+        self,
+        item_id: UUID,
+        action: ReviewItemResolution,
+        note: str | None,
+        principal: WorkspaceServicePrincipal | None,
+        *,
+        trusted_worker: bool,
+    ) -> ReviewItem:
+        """Resolve under one SQLite write lock with tenant scope enforced."""
+
+        predicate, parameters = self._scope(principal)
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                condition = "i.id = ?"
+                values: tuple[str, ...] = (str(item_id),)
+                if not trusted_worker:
+                    condition += f" AND {predicate}"
+                    values = (*values, *parameters)
+                row = self._connection.execute(
+                    "SELECT i.document FROM data_tool_review_items AS i "
+                    "JOIN datasets AS d ON d.id = i.dataset_id WHERE " + condition,
+                    values,
+                ).fetchone()
+                if row is None:
+                    raise LookupError("ReviewItem was not found in the caller's scope.")
+                current = ReviewItem.model_validate_json(row["document"])
+                desired = (
+                    ReviewItemState.ACKNOWLEDGED
+                    if action == ReviewItemResolution.ACKNOWLEDGE
+                    else ReviewItemState.REJECTED
+                )
+                if current.state == desired:
+                    self._connection.commit()
+                    return current
+                if current.state != ReviewItemState.OPEN:
+                    raise ValueError("A resolved ReviewItem cannot change its disposition.")
+                updated = current.model_copy(
+                    update={
+                        "state": desired,
+                        "note": note,
+                        "resolved_at": utc_now(),
+                        "resource_version": current.resource_version + 1,
+                    }
+                )
+                self._connection.execute(
+                    "UPDATE data_tool_review_items SET state=?,document=? WHERE id=?",
+                    (
+                        updated.state.value,
+                        updated.model_dump_json(by_alias=True, exclude_none=True),
+                        str(item_id),
+                    ),
+                )
+                self._connection.commit()
+                return updated
+            except Exception:
+                self._connection.rollback()
+                raise
+
+    def _has_unresolved_review_items_locked(
+        self,
+        dataset_id: UUID,
+        content_revision_id: UUID,
+    ) -> bool:
+        """Check nearest source lineage issues while holding the write transaction."""
+
+        rows = self._connection.execute(
+            "SELECT id,document FROM data_tool_content_revisions WHERE dataset_id = ?",
+            (str(dataset_id),),
+        ).fetchall()
+        revisions = {
+            UUID(row["id"]): ContentRevision.model_validate_json(row["document"]) for row in rows
+        }
+        current = revisions.get(content_revision_id)
+        if current is None:
+            return True
+
+        lineage: list[ContentRevision] = []
+        seen: set[UUID] = set()
+        cursor: ContentRevision | None = current
+        while cursor is not None:
+            if cursor.id in seen:
+                return True
+            seen.add(cursor.id)
+            lineage.append(cursor)
+            if cursor.parent_revision_id is None:
+                break
+            parent = revisions.get(cursor.parent_revision_id)
+            if parent is None:
+                return True
+            cursor = parent
+
+        report_rows = self._connection.execute(
+            "SELECT document FROM data_tool_source_parse_reports WHERE dataset_id = ?",
+            (str(dataset_id),),
+        ).fetchall()
+        reports = [SourceParseReport.model_validate_json(row["document"]) for row in report_rows]
+        depth_by_revision = {revision.id: depth for depth, revision in enumerate(lineage)}
+        for source_id in current.source_revision_ids:
+            linked = [
+                (report, depth_by_revision[report.content_revision_id])
+                for report in reports
+                if report.source_revision_id == source_id
+                and report.content_revision_id is not None
+                and report.content_revision_id in depth_by_revision
+            ]
+            nearest_depth = min(
+                (depth for _, depth in linked),
+                default=None,
+            )
+            nearest_reports = [report for report, depth in linked if depth == nearest_depth]
+            nearest = max(
+                nearest_reports,
+                key=lambda report: (report.created_at, report.updated_at, str(report.id)),
+                default=None,
+            )
+            if nearest is not None and self._report_has_unresolved_issues_locked(nearest):
+                return True
+
+            # A newer queued/running/warning report may be between creation of
+            # the nearest applicable revision and the current child. It has no
+            # revision link yet, so fail closed until its parse outcome is bound.
+            if nearest_depth is not None:
+                anchor = lineage[nearest_depth]
+                anchor_created_at = anchor.created_at
+            else:
+                prior_source_revision = next(
+                    (
+                        revision
+                        for revision in lineage[1:]
+                        if source_id in revision.source_revision_ids
+                    ),
+                    None,
+                )
+                anchor_created_at = (
+                    prior_source_revision.created_at
+                    if prior_source_revision is not None
+                    else datetime.min.replace(tzinfo=current.created_at.tzinfo)
+                )
+            unbound = [
+                report
+                for report in reports
+                if report.source_revision_id == source_id
+                and report.content_revision_id is None
+                and report.created_at > anchor_created_at
+                and report.created_at <= current.created_at
+                and report.status
+                in {
+                    SourceParseReportState.QUEUED,
+                    SourceParseReportState.RUNNING,
+                    SourceParseReportState.WARNING,
+                }
+            ]
+            if unbound:
+                newest = max(
+                    unbound,
+                    key=lambda report: (report.created_at, report.updated_at, str(report.id)),
+                )
+                if newest.status != SourceParseReportState.WARNING or (
+                    self._report_has_unresolved_issues_locked(newest)
+                ):
+                    return True
+
+        return False
+
+    def _report_has_unresolved_issues_locked(self, report: SourceParseReport) -> bool:
+        """Fail closed for a warning receipt missing queue projections or acknowledgements."""
+
+        expected = self._expected_review_item_count(report)
+        rows = self._connection.execute(
+            "SELECT state FROM data_tool_review_items WHERE dataset_id = ? "
+            "AND source_parse_report_id = ?",
+            (str(report.dataset_id), str(report.id)),
+        ).fetchall()
+        if report.status == SourceParseReportState.WARNING and (
+            expected == 0 or len(rows) != expected
+        ):
+            return True
+        return any(row["state"] != ReviewItemState.ACKNOWLEDGED.value for row in rows)
+
+    def has_unresolved_review_items(
+        self,
+        content_revision_id: UUID,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> bool:
+        """Return whether OPEN or REJECTED issues still block approval."""
+
+        predicate, parameters = self._scope(principal)
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT r.dataset_id FROM data_tool_content_revisions AS r "
+                "JOIN datasets AS d ON d.id = r.dataset_id "
+                f"WHERE r.id = ? AND {predicate}",
+                (str(content_revision_id), *parameters),
+            ).fetchone()
+            if row is None:
+                raise LookupError("ContentRevision was not found in the caller's scope.")
+            return self._has_unresolved_review_items_locked(
+                UUID(row["dataset_id"]), content_revision_id
+            )
+
+    def has_unresolved_review_items_for_worker(self, content_revision_id: UUID) -> bool:
+        """Return approval blockers for a trusted Product worker."""
+
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT dataset_id FROM data_tool_content_revisions WHERE id = ?",
+                (str(content_revision_id),),
+            ).fetchone()
+            if row is None:
+                raise LookupError("ContentRevision was not found.")
+            return self._has_unresolved_review_items_locked(
+                UUID(row["dataset_id"]), content_revision_id
+            )
+
     def create_content_revision(
         self,
         revision: ContentRevision,
@@ -262,31 +1104,137 @@ class DataToolsStore:
                 self._require_dataset_for_worker(revision.dataset_id)
             else:
                 self._require_dataset(revision.dataset_id, principal)
-            if revision.parent_revision_id is not None:
-                parent = self._connection.execute(
-                    "SELECT dataset_id FROM data_tool_content_revisions WHERE id = ?",
-                    (str(revision.parent_revision_id),),
-                ).fetchone()
-                if parent is None or parent["dataset_id"] != str(revision.dataset_id):
-                    raise ValueError("ContentRevision parent must belong to the same Dataset.")
-            for source_id in revision.source_revision_ids:
-                row = self._connection.execute(
-                    "SELECT dataset_id FROM data_tool_source_revisions WHERE id = ?",
-                    (str(source_id),),
-                ).fetchone()
-                if row is None or row["dataset_id"] != str(revision.dataset_id):
-                    raise ValueError("ContentRevision sources must belong to the same Dataset.")
-            allowed_sources = {str(value) for value in revision.source_revision_ids}
-            if any(
-                str(block.source_revision_id) not in allowed_sources for block in revision.blocks
-            ):
-                raise ValueError("Every block must reference one of the revision's sources.")
-            self._connection.execute(
-                "INSERT INTO data_tool_content_revisions(id,dataset_id,revision,document) "
-                "VALUES (?,?,?,?)",
-                (str(revision.id), str(revision.dataset_id), revision.revision, document),
-            )
+            self._insert_content_revision_locked(revision, document)
         return revision
+
+    def _insert_content_revision_locked(
+        self,
+        revision: ContentRevision,
+        document: str | None = None,
+    ) -> None:
+        """Insert a revision after validating all same-Dataset lineage links."""
+
+        if revision.parent_revision_id is not None:
+            parent = self._connection.execute(
+                "SELECT dataset_id FROM data_tool_content_revisions WHERE id = ?",
+                (str(revision.parent_revision_id),),
+            ).fetchone()
+            if parent is None or parent["dataset_id"] != str(revision.dataset_id):
+                raise ValueError("ContentRevision parent must belong to the same Dataset.")
+        for source_id in revision.source_revision_ids:
+            row = self._connection.execute(
+                "SELECT dataset_id FROM data_tool_source_revisions WHERE id = ?",
+                (str(source_id),),
+            ).fetchone()
+            if row is None or row["dataset_id"] != str(revision.dataset_id):
+                raise ValueError("ContentRevision sources must belong to the same Dataset.")
+        allowed_sources = {str(value) for value in revision.source_revision_ids}
+        if any(str(block.source_revision_id) not in allowed_sources for block in revision.blocks):
+            raise ValueError("Every block must reference one of the revision's sources.")
+        snapshot = document or revision.model_dump_json(by_alias=True, exclude_none=True)
+        self._connection.execute(
+            "INSERT INTO data_tool_content_revisions(id,dataset_id,revision,document) "
+            "VALUES (?,?,?,?)",
+            (str(revision.id), str(revision.dataset_id), revision.revision, snapshot),
+        )
+
+    def finalize_parsed_content_revision_for_worker(
+        self,
+        revision: ContentRevision,
+        reports: list[SourceParseReport],
+        review_items: list[ReviewItem],
+    ) -> ContentRevision:
+        """Atomically publish parsed blocks, report links, and their review issues."""
+
+        if revision.state != ContentRevisionState.DRAFT:
+            raise ValueError("Parsed ContentRevisions must start in DRAFT.")
+        if not reports:
+            raise ValueError("A parsed ContentRevision must include source reports.")
+        source_ids = set(revision.source_revision_ids)
+        report_ids: set[UUID] = set()
+        linked_reports: list[SourceParseReport] = []
+        for report in reports:
+            if report.dataset_id != revision.dataset_id:
+                raise ValueError("Parse reports and ContentRevision must share a Dataset.")
+            if report.source_revision_id not in source_ids:
+                raise ValueError("Every finalized parse report source must be in the revision.")
+            if report.status not in {
+                SourceParseReportState.SUCCEEDED,
+                SourceParseReportState.WARNING,
+            }:
+                raise ValueError("Only successful parse reports can be finalized with a revision.")
+            if report.id in report_ids:
+                raise ValueError("A parse report may only be finalized once per revision.")
+            report_ids.add(report.id)
+            linked_reports.append(
+                report.model_copy(
+                    update={
+                        "content_revision_id": revision.id,
+                        "updated_at": max(report.updated_at, utc_now()),
+                    }
+                )
+            )
+
+        items_by_report: dict[UUID, list[ReviewItem]] = {report_id: [] for report_id in report_ids}
+        for item in review_items:
+            if (
+                item.dataset_id != revision.dataset_id
+                or item.content_revision_id != revision.id
+                or item.source_parse_report_id not in report_ids
+                or item.source_revision_id not in source_ids
+            ):
+                raise ValueError("ReviewItems must link to this parsed revision and its reports.")
+            items_by_report[item.source_parse_report_id].append(item)
+        report_by_id = {report.id: report for report in linked_reports}
+        for report_id, report in report_by_id.items():
+            expected = self._expected_review_item_count(report)
+            actual = len(items_by_report[report_id])
+            if report.status == SourceParseReportState.WARNING and actual != expected:
+                raise ValueError(
+                    "Warning parse reports must materialize every review item atomically."
+                )
+            if report.status == SourceParseReportState.SUCCEEDED and actual != 0:
+                raise ValueError("Successful parse reports cannot contain review items.")
+
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._require_dataset_for_worker(revision.dataset_id)
+                self._insert_content_revision_locked(revision)
+                saved_reports: dict[UUID, SourceParseReport] = {}
+                for report in linked_reports:
+                    saved = self._save_source_parse_report_locked(
+                        report,
+                        None,
+                        trusted_worker=True,
+                    )
+                    saved_reports[saved.id] = saved
+                for item in review_items:
+                    saved_report = saved_reports[item.source_parse_report_id]
+                    if item.source_revision_id != saved_report.source_revision_id:
+                        raise ValueError("ReviewItem source must match its report.")
+                    self._save_review_item_locked(item, None, trusted_worker=True)
+                self._connection.commit()
+                return revision
+            except Exception:
+                self._connection.rollback()
+                raise
+
+    @staticmethod
+    def _expected_review_item_count(report: SourceParseReport) -> int:
+        """Count queue projections using the same rules as DataToolsService."""
+
+        diagnostic_messages: set[str] = set()
+        count = 0
+        for diagnostic in report.diagnostics:
+            code = diagnostic.get("code")
+            message = diagnostic.get("message")
+            if isinstance(code, str) and isinstance(message, str):
+                count += 1
+                diagnostic_messages.add(message)
+        count += sum(warning.message not in diagnostic_messages for warning in report.warnings)
+        count += len(report.unsupported_content)
+        return count
 
     def get_content_revision(
         self,
@@ -369,6 +1317,14 @@ class DataToolsStore:
                 if row is None:
                     raise LookupError("ContentRevision was not found in the caller's scope.")
                 current = ContentRevision.model_validate_json(row["document"])
+                if (
+                    decision == ContentRevisionState.APPROVED
+                    and self._has_unresolved_review_items_locked(current.dataset_id, current.id)
+                ):
+                    raise ValueError(
+                        "ContentRevision cannot be approved while parser or OCR review items "
+                        "are OPEN or REJECTED."
+                    )
                 updated = current.model_copy(
                     update={
                         "state": decision,

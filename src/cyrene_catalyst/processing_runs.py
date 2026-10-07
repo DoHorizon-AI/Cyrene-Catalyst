@@ -19,6 +19,7 @@ from uuid import UUID, uuid4
 
 from cyrene_catalyst.data_tools_domain import (
     ProcessingFailure,
+    ProcessingOperation,
     ProcessingProgress,
     ProcessingRun,
     ProcessingRunState,
@@ -289,6 +290,8 @@ class ProcessingRunCoordinator:
                     "resource_version": run.resource_version + 1,
                 }
             )
+            if run.operation == ProcessingOperation.PARSE:
+                self.store.mark_parse_reports_interrupted_for_worker(run.id, now)
             self.store.save_run_for_worker(recovered)
         for run_id in queued:
             self.enqueue_for_worker(run_id)

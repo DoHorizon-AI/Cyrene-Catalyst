@@ -31,12 +31,19 @@ from cyrene_catalyst.data_tools_domain import (
     ContentRevision,
     ContentRevisionState,
     GenerationReceipt,
+    ProcessingFailure,
     ProcessingOperation,
     ProcessingProgress,
     ProcessingRun,
     ProcessingRunState,
     ProcessingStage,
     ProcessingWarning,
+    ReviewItem,
+    ReviewItemKind,
+    ReviewItemResolution,
+    ReviewItemState,
+    SourceParseReport,
+    SourceParseReportState,
     SourceRevision,
     recipe_digest_for,
 )
@@ -60,7 +67,10 @@ from cyrene_catalyst.workspace_auth import WorkspaceServicePrincipal
 DOCUMENT_PARSING_CONNECTION_ENV = "CYRENE_DOCUMENT_PARSING_CONNECTION_REF"
 KNOWLEDGE_PREPARATION_CONNECTION_ENV = "CYRENE_KNOWLEDGE_PREPARATION_CONNECTION_REF"
 DATASET_GENERATION_CONNECTION_ENV = "CYRENE_DATASET_GENERATION_CONNECTION_REF"
-MAX_SOURCE_BYTES = 64 * 1024 * 1024
+MAX_SOURCE_BYTES = 32 * 1024 * 1024
+MAX_BATCH_SOURCES = 20
+MAX_BATCH_SOURCE_BYTES = 128 * 1024 * 1024
+MAX_BATCH_REQUEST_BYTES = 129 * 1024 * 1024
 MAX_RESULT_BYTES = 256 * 1024 * 1024
 MAX_ZIP_ENTRY_BYTES = 128 * 1024 * 1024
 _PARSER_CAPABILITY = "document.parsing.v1"
@@ -68,7 +78,19 @@ _KNOWLEDGE_CAPABILITY = "dataset.knowledge.v1"
 _GENERATION_CAPABILITY = "dataset.generation.v1"
 _SOURCE_NAMESPACE = UUID("b2d70d7a-b10c-4caa-a3a0-10cbce05501c")
 _BLOCK_NAMESPACE = UUID("43cc3e4d-9882-49fa-93c7-bfb71f96007a")
+_REVIEW_NAMESPACE = UUID("9cd0e2d0-60c7-4b37-bccd-cc49a16ac412")
 _VERSION_BINDING_ID = "catalyst-data-generation-v1"
+_DOCUMENT_PARSER_MEDIA_TYPES = {
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "image/png",
+    "image/jpeg",
+    "text/csv",
+    "text/markdown",
+    "text/plain",
+}
 
 
 def _error(
@@ -201,10 +223,7 @@ def _binding_environment(operation: ProcessingOperation, source: SourceRevision 
     """Select the required configured capability for one processing operation."""
 
     if operation == ProcessingOperation.PARSE:
-        if source is not None and source.media_type in {
-            "application/pdf",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        }:
+        if source is not None and source.media_type in _DOCUMENT_PARSER_MEDIA_TYPES:
             return DOCUMENT_PARSING_CONNECTION_ENV
         return "CYRENE_DATASET_PREPARATION_CONNECTION_REF"
     if operation == ProcessingOperation.BUILD_KNOWLEDGE:
@@ -215,7 +234,7 @@ def _binding_environment(operation: ProcessingOperation, source: SourceRevision 
 def _detect_source_format(
     path: Path, filename: str, media_type: str | None
 ) -> tuple[str, ImportFormat]:
-    """Detect supported source content from bytes and bounded format hints.
+    """Classify bytes without rejecting an upload the parser may diagnose later.
 
     中文:以内容签名为主、文件名和请求媒体类型为辅识别上传格式。
     """
@@ -226,22 +245,45 @@ def _detect_source_format(
     request_type = (media_type or "").split(";", 1)[0].strip().casefold()
     if sample.startswith(b"%PDF-"):
         return "application/pdf", ImportFormat.TEXT
-    if zipfile.is_zipfile(path) and suffix == ".docx":
+    if sample.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png", ImportFormat.TEXT
+    if sample.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg", ImportFormat.TEXT
+    if sample.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"{\\rtf"):
+        return "application/rtf", ImportFormat.TEXT
+    if zipfile.is_zipfile(path):
         try:
             with zipfile.ZipFile(path) as archive:
                 names = set(archive.namelist())
-            if "word/document.xml" in names and "[Content_Types].xml" in names:
-                return (
+            package_types = {
+                ".docx": (
+                    "word/document.xml",
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    ImportFormat.TEXT,
-                )
+                ),
+                ".pptx": (
+                    "ppt/presentation.xml",
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                ),
+                ".xlsx": (
+                    "xl/workbook.xml",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ),
+            }
+            if "[Content_Types].xml" in names:
+                if suffix in package_types:
+                    required_entry, detected_type = package_types[suffix]
+                    if required_entry in names:
+                        return detected_type, ImportFormat.TEXT
+                for required_entry, detected_type in package_types.values():
+                    if required_entry in names:
+                        return detected_type, ImportFormat.TEXT
         except (OSError, zipfile.BadZipFile) as exc:
             emit_diagnostic_error(
                 "catalyst.source_format_probe",
-                "CATALYST_SOURCE_DOCX_PROBE_FAILED",
-                "The DOCX package metadata could not be read; continuing format detection.",
+                "CATALYST_SOURCE_PACKAGE_PROBE_FAILED",
+                "The Office package metadata could not be read; continuing format detection.",
                 attributes={
-                    "probe": "docx_zip_metadata",
+                    "probe": "office_zip_metadata",
                     "error_type": type(exc).__name__,
                 },
             )
@@ -249,24 +291,6 @@ def _detect_source_format(
         return "application/vnd.apache.parquet", ImportFormat.PARQUET
     if suffix in {".parquet", ".pq"} or request_type == "application/vnd.apache.parquet":
         return "application/vnd.apache.parquet", ImportFormat.PARQUET
-
-    try:
-        if path.stat().st_size > MAX_SOURCE_BYTES:
-            raise _error(
-                "CATALYST_SOURCE_TOO_LARGE",
-                "Source is too large",
-                f"A source file may contain at most {MAX_SOURCE_BYTES} bytes.",
-                413,
-            )
-        decoded = path.read_text(encoding="utf-8")
-    except (UnicodeError, OSError):
-        raise _error(
-            "CATALYST_SOURCE_FORMAT_UNSUPPORTED",
-            "Source format is not supported",
-            "Upload PDF, DOCX, UTF-8 text, JSONL, JSON, CSV, or Parquet data.",
-            415,
-        ) from None
-    nonempty = [line for line in decoded.splitlines() if line.strip()]
     if suffix in {".jsonl", ".ndjson"} or request_type in {
         "application/x-ndjson",
         "application/jsonl",
@@ -276,6 +300,38 @@ def _detect_source_format(
         return "application/json", ImportFormat.JSON
     if suffix == ".csv" or request_type == "text/csv":
         return "text/csv", ImportFormat.CSV
+    if suffix in {".md", ".markdown"} or request_type == "text/markdown":
+        return "text/markdown", ImportFormat.TEXT
+    if suffix == ".rtf" or request_type == "application/rtf":
+        return "application/rtf", ImportFormat.TEXT
+    if suffix == ".txt" or request_type == "text/plain":
+        return "text/plain", ImportFormat.TEXT
+
+    extension_types = {
+        ".pdf": ("application/pdf", ImportFormat.TEXT),
+        ".docx": (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ImportFormat.TEXT,
+        ),
+        ".pptx": (
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            ImportFormat.TEXT,
+        ),
+        ".xlsx": (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ImportFormat.TEXT,
+        ),
+        ".png": ("image/png", ImportFormat.TEXT),
+        ".jpg": ("image/jpeg", ImportFormat.TEXT),
+        ".jpeg": ("image/jpeg", ImportFormat.TEXT),
+    }
+    if suffix in extension_types:
+        return extension_types[suffix]
+    try:
+        decoded = path.read_text(encoding="utf-8")
+    except (UnicodeError, OSError):
+        return "application/octet-stream", ImportFormat.TEXT
+    nonempty = [line for line in decoded.splitlines() if line.strip()]
     if nonempty:
         try:
             for line in nonempty:
@@ -286,16 +342,7 @@ def _detect_source_format(
                 return "application/x-ndjson", ImportFormat.JSONL
         except json.JSONDecodeError:
             pass  # diagnostic-allow: JSONL probing falls through to CSV or text classification
-    if nonempty and "," in nonempty[0] and len(nonempty) > 1:
-        return "text/csv", ImportFormat.CSV
-    if decoded:
-        return "text/plain", ImportFormat.TEXT
-    raise _error(
-        "CATALYST_SOURCE_EMPTY",
-        "Source is empty",
-        "Upload a non-empty source file.",
-        422,
-    )
+    return "application/octet-stream", ImportFormat.TEXT
 
 
 def _metadata_string(row: dict[str, Any], index: int, *keys: str) -> str | None:
@@ -411,6 +458,101 @@ class DataToolsService:
         self.require_dataset(dataset_id, principal)
         return self.store.list_sources(dataset_id, principal)
 
+    def list_source_parse_reports(
+        self,
+        dataset_id: UUID,
+        *,
+        source_revision_id: UUID | None = None,
+        processing_run_id: UUID | None = None,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> list[SourceParseReport]:
+        """List durable per-source parse outcomes inside the Dataset scope."""
+
+        self.require_dataset(dataset_id, principal)
+        return self.store.list_source_parse_reports(
+            dataset_id,
+            source_revision_id=source_revision_id,
+            processing_run_id=processing_run_id,
+            principal=principal,
+        )
+
+    def list_review_items(
+        self,
+        dataset_id: UUID,
+        *,
+        state: ReviewItemState | None = None,
+        source_revision_id: UUID | None = None,
+        content_revision_id: UUID | None = None,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> list[ReviewItem]:
+        """List persisted parser/OCR issues within the Dataset scope."""
+
+        self.require_dataset(dataset_id, principal)
+        return self.store.list_review_items(
+            dataset_id,
+            state=state,
+            source_revision_id=source_revision_id,
+            content_revision_id=content_revision_id,
+            principal=principal,
+        )
+
+    def resolve_review_item(
+        self,
+        item_id: UUID,
+        action: ReviewItemResolution,
+        note: str | None = None,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> ReviewItem:
+        """Apply a scoped human disposition to one parser/OCR issue."""
+
+        try:
+            return self.store.resolve_review_item(item_id, action, note, principal)
+        except LookupError as exc:
+            raise _error(
+                "CATALYST_REVIEW_ITEM_NOT_FOUND",
+                "Review item not found",
+                "No review item exists with the requested id in this workspace.",
+                404,
+            ) from exc
+        except ValueError as exc:
+            raise _error(
+                "CATALYST_REVIEW_ITEM_ALREADY_RESOLVED",
+                "Review item already resolved",
+                "A resolved item cannot receive a different disposition.",
+                409,
+            ) from exc
+
+    def list_generated_drafts(
+        self,
+        dataset_id: UUID,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> list[tuple[ContentRevision, UUID | None]]:
+        """List generated DRAFT revisions and their producing run when available."""
+
+        self.require_dataset(dataset_id, principal)
+        runs = self.store.list_runs(dataset_id, principal)
+        run_ids: dict[UUID, UUID] = {}
+        for run in runs:
+            if run.operation != ProcessingOperation.GENERATE_QA:
+                continue
+            for stage in run.stages:
+                if stage.output is None:
+                    continue
+                raw_revision_id = stage.output.get("generatedContentRevisionId")
+                if isinstance(raw_revision_id, str):
+                    try:
+                        run_ids.setdefault(UUID(raw_revision_id), run.id)
+                    except ValueError:
+                        continue
+        drafts = []
+        for revision in self.store.list_content_revisions(dataset_id, principal):
+            if revision.state != ContentRevisionState.DRAFT or not any(
+                block.origin == BlockOrigin.GENERATED for block in revision.blocks
+            ):
+                continue
+            drafts.append((revision, run_ids.get(revision.id)))
+        return drafts
+
     def list_content_revisions(
         self,
         dataset_id: UUID,
@@ -458,6 +600,7 @@ class DataToolsService:
             all_sources = self.store.list_sources(dataset_id, principal)
             if source_revision_ids:
                 source_by_id = {item.id: item for item in all_sources}
+                selected_ids: set[UUID] = set()
                 for source_id in source_revision_ids:
                     source = source_by_id.get(source_id)
                     if source is None:
@@ -467,7 +610,9 @@ class DataToolsService:
                             "Every source revision must belong to this Dataset and workspace.",
                             404,
                         )
-                    selected_sources.append(source)
+                    if source.id not in selected_ids:
+                        selected_sources.append(source)
+                        selected_ids.add(source.id)
             else:
                 latest: dict[UUID, SourceRevision] = {}
                 for source in all_sources:
@@ -512,8 +657,14 @@ class DataToolsService:
         # Configuration problems are rejected before durable admission; they are
         # never translated into a source-format error by an async worker.
         for source in selected_sources if operation == ProcessingOperation.PARSE else [None]:
-            if source is not None and source.media_type == "application/x-ndjson":
-                continue
+            if source is not None:
+                if source.media_type == "application/x-ndjson":
+                    continue
+                if source.media_type not in (
+                    _DOCUMENT_PARSER_MEDIA_TYPES
+                    | {"application/json", "application/vnd.apache.parquet"}
+                ):
+                    continue
             self._preflight_binding(_binding_environment(operation, source))
 
         if operation == ProcessingOperation.GENERATE_QA:
@@ -566,6 +717,21 @@ class DataToolsService:
         )
         try:
             self.store.create_run(run, principal)
+            if operation == ProcessingOperation.PARSE:
+                for source in selected_sources:
+                    report_time = utc_now()
+                    self.store.save_source_parse_report(
+                        SourceParseReport(
+                            id=uuid4(),
+                            dataset_id=dataset_id,
+                            source_revision_id=source.id,
+                            processing_run_id=run.id,
+                            status=SourceParseReportState.QUEUED,
+                            created_at=report_time,
+                            updated_at=report_time,
+                        ),
+                        principal,
+                    )
             return self.coordinator.enqueue(run.id, principal)
         except LookupError as exc:
             raise _error(
@@ -851,6 +1017,13 @@ class DataToolsService:
                 "ContentRevision not found",
                 "No ContentRevision exists with the requested id in this workspace.",
                 404,
+            ) from exc
+        except ValueError as exc:
+            raise _error(
+                "CATALYST_CONTENT_REVIEW_BLOCKED",
+                "ContentRevision requires review",
+                "Resolve all parser and OCR review items before approving this revision.",
+                409,
             ) from exc
 
     def publish_version(
@@ -1449,21 +1622,17 @@ class DataToolsService:
         )
 
     def _parse_sources(self, run: ProcessingRun, cancel_event: Any) -> dict[str, Any]:
-        """Parse document or tabular sources into one reviewed ContentRevision."""
+        """Parse each selected source independently and persist its durable outcome."""
 
-        revisions = self.store.list_content_revisions_for_worker(run.dataset_id)
-        previous = revisions[0] if revisions else None
+        prior_revisions = self.store.list_content_revisions_for_worker(run.dataset_id)
+        previous = prior_revisions[0] if prior_revisions else None
         selected_ids = set(run.source_revision_ids)
-        blocks = (
+        retained_blocks = (
             [block for block in previous.blocks if block.source_revision_id not in selected_ids]
             if previous
             else []
         )
-        source_ids = set(previous.source_revision_ids if previous else []) - selected_ids
-        output_artifacts: list[ArtifactRef] = []
-        warning_entries: list[dict[str, str]] = []
-        parser_receipts: list[dict[str, Any]] = []
-        structured_imports: list[dict[str, Any]] = []
+        retained_source_ids = set(previous.source_revision_ids if previous else []) - selected_ids
         selected_sources = [
             self.store.get_source_for_worker(source_id) for source_id in run.source_revision_ids
         ]
@@ -1474,63 +1643,677 @@ class DataToolsService:
                 retryable=False,
                 outcome_unknown=False,
             )
+
+        report_by_source = {
+            report.source_revision_id: report
+            for report in self.store.list_source_parse_reports_for_worker(run.dataset_id, run.id)
+        }
+        prior_report_by_source: dict[UUID, SourceParseReport] = {}
+        if run.retry_of_run_id is not None:
+            prior_report_by_source = {
+                report.source_revision_id: report
+                for report in self.store.list_source_parse_reports_for_worker(
+                    run.dataset_id, run.retry_of_run_id
+                )
+            }
+
+        # ── Phase 1: Resolve this run's report rows before doing file work. ──
         for source in selected_sources:
             assert source is not None
-            if cancel_event.is_set():
-                raise StageExecutionFailure(
-                    "CATALYST_RUN_CANCELLED",
-                    "The parse run was cancelled.",
-                    retryable=False,
-                    outcome_unknown=False,
+            report = report_by_source.get(source.id)
+            if report is None:
+                now = utc_now()
+                report = self.store.save_source_parse_report_for_worker(
+                    SourceParseReport(
+                        id=uuid4(),
+                        dataset_id=run.dataset_id,
+                        source_revision_id=source.id,
+                        processing_run_id=run.id,
+                        status=SourceParseReportState.QUEUED,
+                        created_at=now,
+                        updated_at=now,
+                    )
                 )
-            path = self.artifacts.resolve(source.artifact)
-            if source.media_type in {
-                "application/pdf",
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            }:
-                parsed, artifacts, parse_warnings, parse_receipt = self._parse_document(
-                    source, path, run, cancel_event
-                )
-                blocks.extend(parsed)
-                output_artifacts.extend(artifacts)
-                warning_entries.extend(parse_warnings)
-                parser_receipts.append(parse_receipt)
-            elif source.media_type == "application/x-ndjson":
-                records = self._read_structured_jsonl(path)
-                source_blocks = self._rows_to_blocks(source, records)
-                blocks.extend(source_blocks)
-                source_ids.add(source.id)
-                structured_imports.append(
-                    {
-                        "sourceRevisionId": str(source.id),
-                        "format": "CYRENE_STRUCTURED_SFT_JSONL_V1",
-                        "rowCount": len(records),
-                        "sourceArtifact": source.artifact.model_dump(
-                            by_alias=True, exclude_none=True
-                        ),
+            report = self.store.save_source_parse_report_for_worker(
+                report.model_copy(
+                    update={
+                        "status": SourceParseReportState.RUNNING,
+                        "started_at": report.started_at or utc_now(),
+                        "finished_at": None,
+                        "updated_at": utc_now(),
+                        "failure": None,
                     }
                 )
-            else:
-                inspection = self._inspect_tabular(source, path)
-                source_blocks = self._rows_to_blocks(source, inspection)
-                blocks.extend(source_blocks)
-                source_ids.add(source.id)
-        revision = self._new_worker_revision(
-            dataset_id=run.dataset_id,
-            source_revision_ids=sorted(source_ids | selected_ids, key=str),
-            parent_revision_id=previous.id if previous else None,
-            blocks=blocks,
-        )
+            )
+            report_by_source[source.id] = report
+
+        # ── Phase 2: Parse, snapshot, and persist every source independently. ──
+        parsed_blocks: list[ContentBlock] = []
+        successful_source_ids: set[UUID] = set()
+        output_artifacts: list[ArtifactRef] = []
+        warning_entries: list[dict[str, str]] = []
+        parser_receipts: list[dict[str, Any]] = []
+        structured_imports: list[dict[str, Any]] = []
+        pending_review_reports: list[SourceParseReport] = []
+        failed_count = 0
+        retryable_failures = False
+        cancelled = False
+
+        for source in selected_sources:
+            assert source is not None
+            report = report_by_source[source.id]
+            if cancel_event.is_set():
+                cancelled = True
+                self._finish_source_report(
+                    report,
+                    SourceParseReportState.CANCELLED,
+                    failure=ProcessingFailure(
+                        code="CATALYST_RUN_CANCELLED",
+                        message="The parse run was cancelled before this source completed.",
+                        retryable=False,
+                    ),
+                )
+                continue
+
+            try:
+                warnings: list[dict[str, str]]
+                reused = self._reuse_prior_source_output(
+                    source,
+                    prior_report_by_source.get(source.id),
+                )
+                if reused is not None:
+                    source_blocks, prior_report = reused
+                    report_artifacts = prior_report.output_artifacts
+                    warnings = [
+                        {"code": warning.code, "message": warning.message}
+                        for warning in prior_report.warnings
+                    ]
+                    diagnostics = prior_report.diagnostics
+                    unsupported_content = prior_report.unsupported_content
+                    parser_receipts.append(
+                        {
+                            "sourceRevisionId": str(source.id),
+                            "reusedFromParseReportId": str(prior_report.id),
+                            "status": prior_report.status.value.lower(),
+                            "blockCount": len(source_blocks),
+                        }
+                    )
+                else:
+                    (
+                        source_blocks,
+                        report_artifacts,
+                        warnings,
+                        diagnostics,
+                        unsupported_content,
+                        parse_receipt,
+                    ) = self._parse_one_source(source, run, cancel_event)
+                    parser_receipts.append(parse_receipt)
+                    if (
+                        parse_receipt.get("status") == "partial_success"
+                        and not warnings
+                        and not diagnostics
+                        and not unsupported_content
+                    ):
+                        warnings = [
+                            {
+                                "code": "CATALYST_PARSER_PARTIAL_SUCCESS",
+                                "message": "The Parser reported partial_success.",
+                            }
+                        ]
+
+                normalized_artifact = self._publish_source_blocks_snapshot(source, source_blocks)
+                if not any(
+                    artifact.digest == normalized_artifact.digest for artifact in report_artifacts
+                ):
+                    report_artifacts = [*report_artifacts, normalized_artifact]
+                output_artifacts.extend(report_artifacts)
+                source_warnings = [
+                    ProcessingWarning.model_validate(warning) for warning in warnings
+                ]
+                status = (
+                    SourceParseReportState.WARNING
+                    if source_warnings or diagnostics or unsupported_content
+                    else SourceParseReportState.SUCCEEDED
+                )
+                final_report = self._source_report_candidate(
+                    report,
+                    status,
+                    block_count=len(source_blocks),
+                    warnings=source_warnings,
+                    diagnostics=diagnostics,
+                    unsupported_content=unsupported_content,
+                    output_artifacts=report_artifacts,
+                )
+                successful_source_ids.add(source.id)
+                parsed_blocks.extend(source_blocks)
+                warning_entries.extend(
+                    warning.model_dump(by_alias=True, exclude_none=True)
+                    for warning in source_warnings
+                )
+                pending_review_reports.append(final_report)
+                if source.media_type == "application/x-ndjson":
+                    structured_imports.append(
+                        {
+                            "sourceRevisionId": str(source.id),
+                            "format": "CYRENE_STRUCTURED_SFT_JSONL_V1",
+                            "rowCount": len(source_blocks),
+                            "sourceArtifact": source.artifact.model_dump(
+                                by_alias=True, exclude_none=True
+                            ),
+                        }
+                    )
+            except StageExecutionFailure as exc:
+                failed_count += 1
+                is_cancelled = exc.code == "CATALYST_RUN_CANCELLED" or cancel_event.is_set()
+                cancelled = cancelled or is_cancelled
+                failure = ProcessingFailure(
+                    code=self._stable_failure_code(exc.code),
+                    message=(
+                        "The source could not be parsed."
+                        if exc.code == "CATALYST_SOURCE_PARSE_FAILED"
+                        else str(exc)[:2000]
+                    ),
+                    retryable=exc.retryable,
+                )
+                retryable_failures = retryable_failures or failure.retryable
+                failed_report = self._finish_source_report(
+                    report,
+                    SourceParseReportState.CANCELLED
+                    if is_cancelled
+                    else SourceParseReportState.FAILED,
+                    failure=failure,
+                )
+                self._save_report_review_item(
+                    failed_report,
+                    kind=(
+                        ReviewItemKind.UNSUPPORTED_SOURCE
+                        if failure.code == "CATALYST_SOURCE_UNSUPPORTED"
+                        else ReviewItemKind.PARSE_FAILURE
+                    ),
+                    code=failure.code,
+                    message=failure.message,
+                    severity="error",
+                    content_revision_id=None,
+                    index=0,
+                )
+            except CatalystError as exc:
+                failed_count += 1
+                failure = ProcessingFailure(
+                    code=self._stable_failure_code(exc.code),
+                    message=exc.detail[:2000],
+                    retryable=exc.retryable,
+                )
+                retryable_failures = retryable_failures or failure.retryable
+                failed_report = self._finish_source_report(
+                    report,
+                    SourceParseReportState.FAILED,
+                    failure=failure,
+                )
+                self._save_report_review_item(
+                    failed_report,
+                    kind=ReviewItemKind.PARSE_FAILURE,
+                    code=failure.code,
+                    message=failure.message,
+                    severity="error",
+                    content_revision_id=None,
+                    index=0,
+                )
+            except (OSError, UnicodeError, ValueError) as exc:
+                failed_count += 1
+                emit_diagnostic_error(
+                    "catalyst.source_parse",
+                    "CATALYST_SOURCE_PARSE_FAILED",
+                    "A source-specific parse step failed; remaining sources will continue.",
+                    attributes={
+                        "source_revision_id": str(source.id),
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                failure = ProcessingFailure(
+                    code="CATALYST_SOURCE_PARSE_FAILED",
+                    message="The source could not be parsed.",
+                    retryable=False,
+                )
+                failed_report = self._finish_source_report(
+                    report,
+                    SourceParseReportState.FAILED,
+                    failure=failure,
+                )
+                self._save_report_review_item(
+                    failed_report,
+                    kind=ReviewItemKind.PARSE_FAILURE,
+                    code=failure.code,
+                    message=failure.message,
+                    severity="error",
+                    content_revision_id=None,
+                    index=0,
+                )
+
+        if cancelled:
+            # Persist finished source receipts even when the batch is cancelled; the
+            # batch must not strand successful per-source work in RUNNING.
+            for report in pending_review_reports:
+                saved_report = self.store.save_source_parse_report_for_worker(report)
+                self._save_report_review_items(saved_report)
+            raise StageExecutionFailure(
+                "CATALYST_RUN_CANCELLED",
+                "The parse run was cancelled.",
+                retryable=False,
+                outcome_unknown=False,
+            )
+        if not successful_source_ids:
+            raise StageExecutionFailure(
+                "CATALYST_SOURCE_PARSE_FAILED",
+                "No selected source could be parsed.",
+                retryable=retryable_failures,
+                outcome_unknown=False,
+            )
+
+        # ── Phase 3: Atomically publish the revision and its review gate. ──
+        content_revision: ContentRevision | None = None
+        if parsed_blocks:
+            content_revision = self._build_worker_revision(
+                dataset_id=run.dataset_id,
+                source_revision_ids=sorted(
+                    retained_source_ids | successful_source_ids,
+                    key=str,
+                ),
+                parent_revision_id=previous.id if previous else None,
+                blocks=[*retained_blocks, *parsed_blocks],
+            )
+            linked_reports = [
+                report.model_copy(
+                    update={
+                        "content_revision_id": content_revision.id,
+                        "updated_at": utc_now(),
+                    }
+                )
+                for report in pending_review_reports
+            ]
+            review_items = [
+                item for report in linked_reports for item in self._report_review_items(report)
+            ]
+            try:
+                content_revision = self.store.finalize_parsed_content_revision_for_worker(
+                    content_revision,
+                    linked_reports,
+                    review_items,
+                )
+            except (LookupError, ValueError) as exc:
+                raise StageExecutionFailure(
+                    "CATALYST_CONTENT_REVISION_CREATE_FAILED",
+                    "The Product could not atomically persist the parser output and review gate.",
+                    retryable=False,
+                    outcome_unknown=False,
+                ) from exc
+        else:
+            for report in pending_review_reports:
+                saved_report = self.store.save_source_parse_report_for_worker(report)
+                self._save_report_review_items(saved_report)
+
         return {
             "outputArtifacts": [
-                artifact.model_dump(by_alias=True) for artifact in output_artifacts
+                artifact.model_dump(by_alias=True, exclude_none=True)
+                for artifact in output_artifacts
             ],
-            "contentRevisionId": str(revision.id),
-            "blockCount": len(revision.blocks),
+            "contentRevisionId": (
+                str(content_revision.id) if content_revision is not None else None
+            ),
+            "blockCount": len(content_revision.blocks) if content_revision else 0,
+            "successfulSourceRevisionIds": [
+                str(value) for value in sorted(successful_source_ids, key=str)
+            ],
+            "failedSourceCount": failed_count,
             "parserReceipts": parser_receipts,
             "structuredImports": structured_imports,
             "warnings": warning_entries,
         }
+
+    def _parse_one_source(
+        self,
+        source: SourceRevision,
+        run: ProcessingRun,
+        cancel_event: Any,
+    ) -> tuple[
+        list[ContentBlock],
+        list[ArtifactRef],
+        list[dict[str, str]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        dict[str, Any],
+    ]:
+        """Dispatch one source to its canonical parser/import path."""
+
+        path = self.artifacts.resolve(source.artifact)
+        if source.media_type in _DOCUMENT_PARSER_MEDIA_TYPES:
+            return self._parse_document(source, path, run, cancel_event)
+        if source.media_type == "application/x-ndjson":
+            records = self._read_structured_jsonl(path)
+            blocks = self._rows_to_blocks(source, records)
+            return (
+                blocks,
+                [],
+                [],
+                [],
+                [],
+                {
+                    "sourceRevisionId": str(source.id),
+                    "status": "success",
+                    "blockCount": len(blocks),
+                    "format": "CYRENE_STRUCTURED_SFT_JSONL_V1",
+                },
+            )
+        if source.media_type in {"application/json", "application/vnd.apache.parquet"}:
+            inspection = self._inspect_tabular(source, path)
+            blocks = self._rows_to_blocks(source, inspection)
+            return (
+                blocks,
+                [],
+                [],
+                [],
+                [],
+                {
+                    "sourceRevisionId": str(source.id),
+                    "status": "success",
+                    "blockCount": len(blocks),
+                    "format": inspection.source_format.value,
+                },
+            )
+        raise StageExecutionFailure(
+            "CATALYST_SOURCE_UNSUPPORTED",
+            "The source format is not supported by any configured parser.",
+            retryable=False,
+            outcome_unknown=False,
+        )
+
+    def _finish_source_report(
+        self,
+        report: SourceParseReport,
+        status: SourceParseReportState,
+        *,
+        block_count: int = 0,
+        warnings: list[ProcessingWarning] | None = None,
+        diagnostics: list[dict[str, Any]] | None = None,
+        unsupported_content: list[dict[str, Any]] | None = None,
+        failure: ProcessingFailure | None = None,
+        output_artifacts: list[ArtifactRef] | None = None,
+    ) -> SourceParseReport:
+        """Persist a terminal report while retaining immutable source identity."""
+
+        candidate = self._source_report_candidate(
+            report,
+            status,
+            block_count=block_count,
+            warnings=warnings,
+            diagnostics=diagnostics,
+            unsupported_content=unsupported_content,
+            failure=failure,
+            output_artifacts=output_artifacts,
+        )
+        return self.store.save_source_parse_report_for_worker(candidate)
+
+    @staticmethod
+    def _source_report_candidate(
+        report: SourceParseReport,
+        status: SourceParseReportState,
+        *,
+        block_count: int = 0,
+        warnings: list[ProcessingWarning] | None = None,
+        diagnostics: list[dict[str, Any]] | None = None,
+        unsupported_content: list[dict[str, Any]] | None = None,
+        failure: ProcessingFailure | None = None,
+        output_artifacts: list[ArtifactRef] | None = None,
+    ) -> SourceParseReport:
+        """Build a terminal report in memory for atomic revision finalization."""
+
+        now = utc_now()
+        return report.model_copy(
+            update={
+                "status": status,
+                "block_count": block_count,
+                "warnings": warnings or [],
+                "diagnostics": diagnostics or [],
+                "unsupported_content": unsupported_content or [],
+                "failure": failure,
+                "output_artifacts": output_artifacts or [],
+                "finished_at": now,
+                "updated_at": now,
+            }
+        )
+
+    def _publish_source_blocks_snapshot(
+        self,
+        source: SourceRevision,
+        blocks: list[ContentBlock],
+    ) -> ArtifactRef:
+        """Persist the normalized Product block projection for safe retry reuse."""
+
+        staged = self.artifacts.stage_path(f"{uuid4()}.source-content-blocks.json")
+        try:
+            staged.write_bytes(
+                _canonical_json(
+                    {
+                        "schemaVersion": "cyrene.source.content-blocks.v1",
+                        "sourceRevisionId": str(source.id),
+                        "sourceId": str(source.source_id),
+                        "sourceDigest": source.digest,
+                        "blocks": [
+                            block.model_dump(by_alias=True, exclude_none=True) for block in blocks
+                        ],
+                    }
+                )
+            )
+            return self.artifacts.publish(staged, "source-parse-blocks")
+        finally:
+            staged.unlink(missing_ok=True)
+
+    def _reuse_prior_source_output(
+        self,
+        source: SourceRevision,
+        prior: SourceParseReport | None,
+    ) -> tuple[list[ContentBlock], SourceParseReport] | None:
+        """Reuse a successful source snapshot when an explicit retry resumes a batch."""
+
+        if prior is None or prior.status not in {
+            SourceParseReportState.SUCCEEDED,
+            SourceParseReportState.WARNING,
+        }:
+            return None
+        snapshot = next(
+            (
+                artifact
+                for artifact in prior.output_artifacts
+                if artifact.kind == "source-parse-blocks"
+            ),
+            None,
+        )
+        if snapshot is None:
+            return None
+        try:
+            document = json.loads(self.artifacts.resolve(snapshot).read_text(encoding="utf-8"))
+            if (
+                not isinstance(document, dict)
+                or document.get("schemaVersion") != "cyrene.source.content-blocks.v1"
+                or document.get("sourceRevisionId") != str(source.id)
+                or document.get("sourceDigest") != source.digest
+                or not isinstance(document.get("blocks"), list)
+            ):
+                raise ValueError("The source block snapshot does not match its receipt.")
+            blocks = [ContentBlock.model_validate(item) for item in document["blocks"]]
+            if any(block.source_revision_id != source.id for block in blocks):
+                raise ValueError("The source block snapshot contains foreign block lineage.")
+            return blocks, prior
+        except (CatalystError, OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            emit_diagnostic_error(
+                "catalyst.source_parse_retry",
+                "CATALYST_SOURCE_SNAPSHOT_REUSE_FAILED",
+                "A prior source snapshot could not be reused; this source will be parsed again.",
+                attributes={
+                    "source_revision_id": str(source.id),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return None
+
+    @staticmethod
+    def _stable_failure_code(code: str) -> str:
+        """Keep SourceParseReport failures within the public uppercase taxonomy."""
+
+        return code if re.fullmatch(r"[A-Z][A-Z0-9_]+", code) else "CATALYST_SOURCE_PARSE_FAILED"
+
+    def _save_report_review_items(self, report: SourceParseReport) -> None:
+        """Project raw Parser diagnostics into explicit, version-bound review items."""
+
+        for item in self._report_review_items(report):
+            self.store.save_review_item_for_worker(item)
+
+    def _report_review_items(self, report: SourceParseReport) -> list[ReviewItem]:
+        """Build deterministic issue DTOs before an atomic revision finalization."""
+
+        items: list[ReviewItem] = []
+        seen_messages: set[str] = set()
+        for index, diagnostic in enumerate(report.diagnostics):
+            code = diagnostic.get("code")
+            message = diagnostic.get("message")
+            if not isinstance(code, str) or not isinstance(message, str):
+                continue
+            kind_value = diagnostic.get("kind")
+            kind = (
+                ReviewItemKind.OCR_WARNING if kind_value == "ocr" else ReviewItemKind.PARSER_WARNING
+            )
+            items.append(
+                self._build_report_review_item(
+                    report,
+                    kind=kind,
+                    code=code,
+                    message=message,
+                    severity=str(diagnostic.get("severity") or "warning"),
+                    locator=diagnostic.get("locator"),
+                    confidence=diagnostic.get("confidence"),
+                    content_revision_id=report.content_revision_id,
+                    index=index,
+                )
+            )
+            seen_messages.add(message)
+
+        for index, warning in enumerate(report.warnings):
+            if warning.message in seen_messages:
+                continue
+            items.append(
+                self._build_report_review_item(
+                    report,
+                    kind=ReviewItemKind.PARSER_WARNING,
+                    code=warning.code,
+                    message=warning.message,
+                    severity="warning",
+                    content_revision_id=report.content_revision_id,
+                    index=len(report.diagnostics) + index,
+                )
+            )
+        for index, unsupported in enumerate(report.unsupported_content):
+            code = unsupported.get("code")
+            message = unsupported.get("message")
+            items.append(
+                self._build_report_review_item(
+                    report,
+                    kind=ReviewItemKind.UNSUPPORTED_SOURCE,
+                    code=code if isinstance(code, str) else "parser.unsupported_content",
+                    message=(
+                        message[:2000]
+                        if isinstance(message, str)
+                        else "The parser could not fully convert this content."
+                    ),
+                    severity=str(unsupported.get("severity") or "warning"),
+                    locator=unsupported.get("locator"),
+                    confidence=unsupported.get("confidence"),
+                    content_revision_id=report.content_revision_id,
+                    index=len(report.diagnostics) + len(report.warnings) + index,
+                )
+            )
+        return items
+
+    def _save_report_review_item(
+        self,
+        report: SourceParseReport,
+        *,
+        kind: ReviewItemKind,
+        code: str,
+        message: str,
+        severity: str,
+        content_revision_id: UUID | None,
+        index: int,
+        locator: Any = None,
+        confidence: Any = None,
+    ) -> None:
+        """Persist one idempotent issue without moving Parser details into learned text."""
+
+        item = self._build_report_review_item(
+            report,
+            kind=kind,
+            code=code,
+            message=message,
+            severity=severity,
+            content_revision_id=content_revision_id,
+            index=index,
+            locator=locator,
+            confidence=confidence,
+        )
+        self.store.save_review_item_for_worker(item)
+
+    def _build_report_review_item(
+        self,
+        report: SourceParseReport,
+        *,
+        kind: ReviewItemKind,
+        code: str,
+        message: str,
+        severity: str,
+        content_revision_id: UUID | None,
+        index: int,
+        locator: Any = None,
+        confidence: Any = None,
+    ) -> ReviewItem:
+        """Build one deterministic issue without moving Parser details into learned text."""
+
+        safe_locator: ContentLocator | None = None
+        if isinstance(locator, dict):
+            try:
+                safe_locator = ContentLocator.model_validate(locator)
+            except ValueError as exc:
+                emit_diagnostic_error(
+                    "catalyst.source_parse_review",
+                    "CATALYST_REVIEW_LOCATOR_PROJECTION_FAILED",
+                    "A raw Parser issue locator remains in the report but cannot be projected.",
+                    attributes={
+                        "source_revision_id": str(report.source_revision_id),
+                        "error_type": type(exc).__name__,
+                    },
+                )
+        confidence_value = confidence if isinstance(confidence, (int, float)) else None
+        if isinstance(confidence_value, bool):
+            confidence_value = None
+        if confidence_value is not None and not 0 <= confidence_value <= 1:
+            confidence_value = None
+        item = ReviewItem(
+            id=uuid5(
+                _REVIEW_NAMESPACE,
+                f"{report.id}:{index}:{kind.value}:{code}:{message[:500]}",
+            ),
+            dataset_id=report.dataset_id,
+            source_parse_report_id=report.id,
+            source_revision_id=report.source_revision_id,
+            processing_run_id=report.processing_run_id,
+            content_revision_id=content_revision_id,
+            kind=kind,
+            code=code[:200] or kind.value,
+            message=message[:2000] or "The parser reported an issue.",
+            severity=severity[:40] or "warning",
+            locator=safe_locator,
+            confidence=float(confidence_value) if confidence_value is not None else None,
+            state=ReviewItemState.OPEN,
+            created_at=report.updated_at,
+        )
+        return item
 
     def _parse_document(
         self,
@@ -1542,6 +2325,8 @@ class DataToolsService:
         list[ContentBlock],
         list[ArtifactRef],
         list[dict[str, str]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
         dict[str, Any],
     ]:
         """Invoke document.parsing.v1 and verify its three output receipts."""
@@ -1644,6 +2429,26 @@ class DataToolsService:
                     retryable=False,
                     outcome_unknown=False,
                 )
+            raw_diagnostics = response.get("diagnostics", [])
+            if not isinstance(raw_diagnostics, list) or any(
+                not isinstance(item, dict) for item in raw_diagnostics
+            ):
+                raise StageExecutionFailure(
+                    "CATALYST_PLUGIN_RECEIPT_INVALID",
+                    "Parser diagnostics must be an array of objects.",
+                    retryable=False,
+                    outcome_unknown=False,
+                )
+            raw_unsupported = response.get("unsupported_content", [])
+            if not isinstance(raw_unsupported, list) or any(
+                not isinstance(item, dict) for item in raw_unsupported
+            ):
+                raise StageExecutionFailure(
+                    "CATALYST_PLUGIN_RECEIPT_INVALID",
+                    "Parser unsupported_content must be an array of objects.",
+                    retryable=False,
+                    outcome_unknown=False,
+                )
             parse_receipt = {
                 "sourceRevisionId": str(source.id),
                 "sourceDigest": source.digest,
@@ -1653,11 +2458,15 @@ class DataToolsService:
                 "pageCount": page_count,
                 "blockCount": reported_blocks,
                 "warningCount": warning_count,
+                "slideCount": response.get("slide_count"),
+                "sheetCount": response.get("sheet_count"),
+                "diagnostics": raw_diagnostics,
+                "unsupportedContent": raw_unsupported,
                 "payloadArtifact": refs[0].model_dump(by_alias=True, exclude_none=True),
                 "blocksArtifact": refs[1].model_dump(by_alias=True, exclude_none=True),
                 "resultArtifact": refs[2].model_dump(by_alias=True, exclude_none=True),
             }
-            return extracted, refs, warnings, parse_receipt
+            return extracted, refs, warnings, raw_diagnostics, raw_unsupported, parse_receipt
         except (OSError, UnicodeError, json.JSONDecodeError, KeyError) as exc:
             raise StageExecutionFailure(
                 "CATALYST_PLUGIN_OUTPUT_INVALID",
@@ -1814,10 +2623,38 @@ class DataToolsService:
             )
             conversations = row.get("conversations")
             is_conversation = isinstance(conversations, list) and bool(conversations)
-            if not is_instruction and not is_conversation:
+            messages = row.get("messages")
+            is_messages = "messages" in row
+            if is_messages and (
+                not isinstance(messages, list)
+                or not messages
+                or any(
+                    not isinstance(message, dict)
+                    or set(message) != {"role", "content"}
+                    or message.get("role") not in {"user", "assistant"}
+                    or not isinstance(message.get("content"), str)
+                    or not message["content"].strip()
+                    for message in messages
+                )
+            ):
                 raise StageExecutionFailure(
                     "CATALYST_SOURCE_RECORD_UNSUPPORTED",
-                    f"Structured row {index + 1} must contain instruction/output or conversations.",
+                    f"Structured row {index + 1} messages are invalid.",
+                    retryable=False,
+                    outcome_unknown=False,
+                )
+            if not is_instruction and not is_conversation and not is_messages:
+                raise StageExecutionFailure(
+                    "CATALYST_SOURCE_RECORD_UNSUPPORTED",
+                    f"Structured row {index + 1} must contain instruction/output, conversations, "
+                    "or messages.",
+                    retryable=False,
+                    outcome_unknown=False,
+                )
+            if sum((is_instruction, is_conversation, is_messages)) > 1:
+                raise StageExecutionFailure(
+                    "CATALYST_SOURCE_RECORD_UNSUPPORTED",
+                    f"Structured row {index + 1} contains conflicting learned-data formats.",
                     retryable=False,
                     outcome_unknown=False,
                 )
@@ -1840,7 +2677,7 @@ class DataToolsService:
                 learned = {
                     key: row[key] for key in ("instruction", "input", "output") if key in row
                 }
-            else:
+            elif is_conversation:
                 assert isinstance(conversations, list)
                 if any(
                     not isinstance(message, dict)
@@ -1857,10 +2694,29 @@ class DataToolsService:
                         outcome_unknown=False,
                     )
                 learned = {"conversations": conversations}
+            else:
+                assert isinstance(messages, list)
+                role_map = {"user": "human", "assistant": "gpt"}
+                learned = {
+                    "conversations": [
+                        {"from": role_map[message["role"]], "value": message["content"]}
+                        for message in messages
+                    ]
+                }
             canonical = _canonical_json(learned).decode("utf-8")
-            family_value = _metadata_string(
-                row, index, "sourceFamilyId", "sourceFamily", "source_family_id", "source_family"
-            )
+            family_values = [
+                _metadata_string(row, index, key)
+                for key in ("sourceFamilyId", "source_family_id", "sourceFamily", "source_family")
+                if row.get(key) is not None
+            ]
+            if len(set(family_values)) > 1:
+                raise StageExecutionFailure(
+                    "CATALYST_SOURCE_FAMILY_CONFLICT",
+                    f"Structured row {index + 1} has conflicting source-family aliases.",
+                    retryable=False,
+                    outcome_unknown=False,
+                )
+            family_value = family_values[0] if family_values else None
             conversation_value = _metadata_string(
                 row, index, "conversationId", "conversation_id", "groupId", "group_id", "thread_id"
             )
@@ -2358,17 +3214,11 @@ class DataToolsService:
     ) -> ContentRevision:
         """Create a draft snapshot from a trusted in-process worker."""
 
-        revisions = self.store.list_content_revisions_for_worker(dataset_id)
-        revision = ContentRevision(
-            id=uuid4(),
+        revision = self._build_worker_revision(
             dataset_id=dataset_id,
-            revision=(revisions[0].revision + 1) if revisions else 1,
-            parent_revision_id=parent_revision_id,
             source_revision_ids=source_revision_ids,
+            parent_revision_id=parent_revision_id,
             blocks=blocks,
-            state=ContentRevisionState.DRAFT,
-            created_at=utc_now(),
-            resource_version=1,
         )
         try:
             return self.store.create_content_revision_for_worker(revision)
@@ -2379,6 +3229,29 @@ class DataToolsService:
                 retryable=False,
                 outcome_unknown=False,
             ) from exc
+
+    def _build_worker_revision(
+        self,
+        *,
+        dataset_id: UUID,
+        source_revision_ids: list[UUID],
+        parent_revision_id: UUID | None,
+        blocks: list[ContentBlock],
+    ) -> ContentRevision:
+        """Construct a draft snapshot without persisting it."""
+
+        revisions = self.store.list_content_revisions_for_worker(dataset_id)
+        return ContentRevision(
+            id=uuid4(),
+            dataset_id=dataset_id,
+            revision=(revisions[0].revision + 1) if revisions else 1,
+            parent_revision_id=parent_revision_id,
+            source_revision_ids=source_revision_ids,
+            blocks=blocks,
+            state=ContentRevisionState.DRAFT,
+            created_at=utc_now(),
+            resource_version=1,
+        )
 
     @staticmethod
     def _write_blocks(path: Path, blocks: list[ContentBlock]) -> None:

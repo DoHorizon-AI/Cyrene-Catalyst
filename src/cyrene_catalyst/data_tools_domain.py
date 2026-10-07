@@ -2,7 +2,7 @@
 ┌─────────────────────────────────────────────────────────────────────┐
 │  📄 data_tools_domain.py                                            │
 │  Module: cyrene_catalyst.data_tools_domain                          │
-│  Role: Durable source, content, annotation, and run models.          │
+│  Role: Durable source, parse-review, content, and run models.        │
 │                                                                     │
 │  模块职责：定义 Catalyst Data Tools 的持久化领域模型。                 │
 └─────────────────────────────────────────────────────────────────────┘
@@ -147,6 +147,116 @@ class ProcessingFailure(ContractModel):
     code: str = Field(pattern=r"^[A-Z][A-Z0-9_]+$")
     message: str
     retryable: bool
+
+
+class SourceParseReportState(StrEnum):
+    """One source's durable outcome inside a parse batch. | 单来源解析结果。"""
+
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    WARNING = "WARNING"
+    FAILED = "FAILED"
+    INTERRUPTED = "INTERRUPTED"
+    CANCELLED = "CANCELLED"
+
+
+class ReviewItemKind(StrEnum):
+    """Parser issue category shown in the review queue. | 审核队列问题类型。"""
+
+    PARSER_WARNING = "PARSER_WARNING"
+    OCR_WARNING = "OCR_WARNING"
+    PARSE_FAILURE = "PARSE_FAILURE"
+    UNSUPPORTED_SOURCE = "UNSUPPORTED_SOURCE"
+
+
+class ReviewItemState(StrEnum):
+    """Human disposition for a parser or OCR issue. | 解析问题的人工处置状态。"""
+
+    OPEN = "OPEN"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+    REJECTED = "REJECTED"
+
+
+class ReviewItemResolution(StrEnum):
+    """Actions available when resolving one review item. | 审核问题处置动作。"""
+
+    ACKNOWLEDGE = "ACKNOWLEDGE"
+    REJECT = "REJECT"
+
+
+class SourceParseReport(ContractModel):
+    """Per-source parse receipt that survives batch and process failures. | 逐来源解析报告。"""
+
+    id: UUID
+    dataset_id: UUID
+    source_revision_id: UUID
+    processing_run_id: UUID
+    status: SourceParseReportState
+    content_revision_id: UUID | None = None
+    block_count: int = Field(default=0, ge=0)
+    warnings: list[ProcessingWarning] = Field(default_factory=list)
+    diagnostics: list[dict[str, Any]] = Field(default_factory=list)
+    unsupported_content: list[dict[str, Any]] = Field(default_factory=list)
+    failure: ProcessingFailure | None = None
+    output_artifacts: list[ArtifactRef] = Field(default_factory=list)
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    resource_version: int = Field(default=1, ge=1)
+
+    @model_validator(mode="after")
+    def validate_terminal_receipt(self) -> SourceParseReport:
+        """Require successful reports to retain the normalized block snapshot."""
+
+        if self.status == SourceParseReportState.FAILED and self.failure is None:
+            raise ValueError("Failed SourceParseReports must include a failure receipt.")
+        if self.content_revision_id is not None and self.status not in {
+            SourceParseReportState.SUCCEEDED,
+            SourceParseReportState.WARNING,
+        }:
+            raise ValueError(
+                "Only successful or warning SourceParseReports can link a ContentRevision."
+            )
+        if self.status in {
+            SourceParseReportState.SUCCEEDED,
+            SourceParseReportState.WARNING,
+        } and not any(artifact.kind == "source-parse-blocks" for artifact in self.output_artifacts):
+            raise ValueError(
+                "Successful SourceParseReports must retain a source-parse-blocks artifact."
+            )
+        return self
+
+
+class ReviewItem(ContractModel):
+    """Persisted parser/OCR issue with an explicit human disposition. | 持久化解析问题。"""
+
+    id: UUID
+    dataset_id: UUID
+    source_parse_report_id: UUID
+    source_revision_id: UUID
+    processing_run_id: UUID
+    content_revision_id: UUID | None = None
+    kind: ReviewItemKind
+    code: str = Field(min_length=1, max_length=200)
+    message: str
+    severity: str = Field(min_length=1, max_length=40)
+    locator: ContentLocator | None = None
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    state: ReviewItemState = ReviewItemState.OPEN
+    note: str | None = Field(default=None, max_length=2000)
+    created_at: datetime = Field(default_factory=utc_now)
+    resolved_at: datetime | None = None
+    resource_version: int = Field(default=1, ge=1)
+
+    @model_validator(mode="after")
+    def validate_resolution_timestamp(self) -> ReviewItem:
+        """Keep issue state and resolution timestamp consistent. | 校验处置时间。"""
+
+        if (self.state == ReviewItemState.OPEN) != (self.resolved_at is None):
+            raise ValueError("ReviewItem resolvedAt must match its state.")
+        return self
 
 
 def recipe_digest_for(recipe_version: str, recipe: dict[str, Any]) -> str:

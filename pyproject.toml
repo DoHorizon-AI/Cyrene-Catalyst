@@ -4,13 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cyrene-catalyst"
-version = "0.1.0"
+version = "0.2.0"
 description = "Cyrene Product-owned dataset and lineage contract with a replaceable data engine"
 requires-python = ">=3.12"
 license = "Apache-2.0"
 dependencies = [
   "httpx==0.28.1",
   "fastapi==0.141.1",
+  "python-multipart==0.0.32",
   "pydantic==2.13.5",
   "uvicorn==0.37.0",
   "cyrene-artifacts @ git+https://github.com/DoHorizon-AI/Cyrene-Platform.git@c59be6f2bd82489fbe933dadff84fc589e00afd9#subdirectory=sdk/python/cyrene_artifacts",

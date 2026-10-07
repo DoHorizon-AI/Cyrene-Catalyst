@@ -268,6 +268,205 @@
       "properties": {"code": {"type": "string"}, "message": {"type": "string"}},
       "additionalProperties": false
     },
+    "BatchUploadError": {
+      "type": "object",
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": {"type": "string", "minLength": 1, "maxLength": 120},
+        "message": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "retryable": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "BatchSourceUploadItem": {
+      "type": "object",
+      "required": ["filename", "source", "error"],
+      "properties": {
+        "filename": {"type": "string", "minLength": 1, "maxLength": 512},
+        "source": {
+          "anyOf": [
+            {"$ref": "#/$defs/SourceRevision"},
+            {"type": "null"}
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {"$ref": "#/$defs/BatchUploadError"},
+            {"type": "null"}
+          ]
+        }
+      },
+      "oneOf": [
+        {"properties": {"source": {"$ref": "#/$defs/SourceRevision"}, "error": {"type": "null"}}},
+        {"properties": {"source": {"type": "null"}, "error": {"$ref": "#/$defs/BatchUploadError"}}}
+      ],
+      "additionalProperties": false
+    },
+    "BatchSourceUploadResponse": {
+      "type": "object",
+      "required": ["items"],
+      "properties": {
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": {"$ref": "#/$defs/BatchSourceUploadItem"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "ParserLocator": {
+      "type": "object",
+      "required": ["source_pages", "section_path", "item_ref", "tree_level", "provenance"],
+      "properties": {
+        "source_pages": {"type": "array", "items": {"type": "integer", "minimum": 1}, "uniqueItems": true},
+        "section_path": {"type": "array", "items": {"type": "string"}},
+        "item_ref": {"type": "string", "minLength": 1},
+        "tree_level": {"type": "integer", "minimum": 0},
+        "table_index": {"type": "integer", "minimum": 0},
+        "provenance": {"type": "array", "items": {"type": "object", "additionalProperties": true}}
+      },
+      "additionalProperties": false
+    },
+    "ParserDiagnostic": {
+      "type": "object",
+      "required": ["code", "message", "kind", "severity"],
+      "properties": {
+        "code": {"type": "string", "minLength": 1},
+        "message": {"type": "string"},
+        "kind": {"type": "string", "enum": ["parser", "ocr"]},
+        "severity": {"const": "warning"},
+        "locator": {"$ref": "#/$defs/ParserLocator"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+      },
+      "additionalProperties": false
+    },
+    "UnsupportedContent": {
+      "type": "object",
+      "description": "Parser-owned structured details for content not converted into blocks.",
+      "additionalProperties": true
+    },
+    "SourceParseReport": {
+      "type": "object",
+      "required": [
+        "id", "datasetId", "sourceRevisionId", "processingRunId", "status", "blockCount",
+        "warnings", "diagnostics", "unsupportedContent", "outputArtifacts", "createdAt",
+        "updatedAt", "resourceVersion"
+      ],
+      "properties": {
+        "id": {"type": "string", "format": "uuid"},
+        "datasetId": {"type": "string", "format": "uuid"},
+        "sourceRevisionId": {"type": "string", "format": "uuid"},
+        "processingRunId": {"type": "string", "format": "uuid"},
+        "status": {"type": "string", "enum": ["QUEUED", "RUNNING", "SUCCEEDED", "WARNING", "FAILED", "INTERRUPTED", "CANCELLED"]},
+        "contentRevisionId": {"type": "string", "format": "uuid"},
+        "blockCount": {"type": "integer", "minimum": 0},
+        "warnings": {"type": "array", "items": {"$ref": "#/$defs/RunWarning"}},
+        "diagnostics": {"type": "array", "items": {"$ref": "#/$defs/ParserDiagnostic"}},
+        "unsupportedContent": {"type": "array", "items": {"$ref": "#/$defs/UnsupportedContent"}},
+        "failure": {"$ref": "#/$defs/RunFailure"},
+        "outputArtifacts": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/ArtifactRef"},
+          "description": "SUCCEEDED and WARNING reports contain a source-parse-blocks ArtifactRef."
+        },
+        "startedAt": {"type": "string", "format": "date-time"},
+        "finishedAt": {"type": "string", "format": "date-time"},
+        "createdAt": {"type": "string", "format": "date-time"},
+        "updatedAt": {"type": "string", "format": "date-time"},
+        "resourceVersion": {"type": "integer", "minimum": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"enum": ["SUCCEEDED", "WARNING"]}}, "required": ["status"]},
+          "then": {
+            "properties": {
+              "outputArtifacts": {
+                "minItems": 1,
+                "contains": {
+                  "type": "object",
+                  "required": ["kind"],
+                  "properties": {"kind": {"const": "source-parse-blocks"}}
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {"required": ["contentRevisionId"]},
+          "then": {"properties": {"status": {"enum": ["SUCCEEDED", "WARNING"]}}}
+        },
+        {
+          "if": {"properties": {"status": {"const": "FAILED"}}, "required": ["status"]},
+          "then": {"required": ["failure"]}
+        }
+      ],
+      "additionalProperties": false
+    },
+    "ReviewItem": {
+      "type": "object",
+      "required": [
+        "id", "datasetId", "sourceParseReportId", "sourceRevisionId", "processingRunId",
+        "kind", "code", "message", "severity", "state", "createdAt", "resourceVersion"
+      ],
+      "properties": {
+        "id": {"type": "string", "format": "uuid"},
+        "datasetId": {"type": "string", "format": "uuid"},
+        "sourceParseReportId": {"type": "string", "format": "uuid"},
+        "sourceRevisionId": {"type": "string", "format": "uuid"},
+        "processingRunId": {"type": "string", "format": "uuid"},
+        "contentRevisionId": {"type": "string", "format": "uuid"},
+        "kind": {"type": "string", "enum": ["PARSER_WARNING", "OCR_WARNING", "PARSE_FAILURE", "UNSUPPORTED_SOURCE"]},
+        "code": {"type": "string", "minLength": 1, "maxLength": 200},
+        "message": {"type": "string"},
+        "severity": {"type": "string", "minLength": 1, "maxLength": 40},
+        "locator": {"$ref": "#/$defs/ContentLocator"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "state": {"type": "string", "enum": ["OPEN", "ACKNOWLEDGED", "REJECTED"]},
+        "note": {"type": "string", "maxLength": 2000},
+        "createdAt": {"type": "string", "format": "date-time"},
+        "resolvedAt": {"type": "string", "format": "date-time"},
+        "resourceVersion": {"type": "integer", "minimum": 1}
+      },
+      "allOf": [
+        {"if": {"properties": {"state": {"const": "OPEN"}}, "required": ["state"]}, "then": {"not": {"required": ["resolvedAt"]}}},
+        {"if": {"properties": {"state": {"enum": ["ACKNOWLEDGED", "REJECTED"]}}, "required": ["state"]}, "then": {"required": ["resolvedAt"]}}
+      ],
+      "additionalProperties": false
+    },
+    "GeneratedDraftSummary": {
+      "type": "object",
+      "required": ["id", "datasetId", "revision", "state", "blockCount", "sourceRevisionIds", "createdAt"],
+      "properties": {
+        "id": {"type": "string", "format": "uuid"},
+        "datasetId": {"type": "string", "format": "uuid"},
+        "revision": {"type": "integer", "minimum": 1},
+        "state": {"const": "DRAFT"},
+        "blockCount": {"type": "integer", "minimum": 0},
+        "sourceRevisionIds": {"type": "array", "items": {"type": "string", "format": "uuid"}, "uniqueItems": true},
+        "createdAt": {"type": "string", "format": "date-time"},
+        "processingRunId": {"type": "string", "format": "uuid"}
+      },
+      "additionalProperties": false
+    },
+    "ReviewQueueResponse": {
+      "type": "object",
+      "required": ["items", "generatedDrafts"],
+      "properties": {
+        "items": {"type": "array", "items": {"$ref": "#/$defs/ReviewItem"}},
+        "generatedDrafts": {"type": "array", "items": {"$ref": "#/$defs/GeneratedDraftSummary"}}
+      },
+      "additionalProperties": false
+    },
+    "ResolveReviewItemRequest": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": {"type": "string", "enum": ["ACKNOWLEDGE", "REJECT"]},
+        "note": {"type": "string", "maxLength": 2000}
+      },
+      "additionalProperties": false
+    },
     "ProcessingRun": {
       "type": "object",
       "required": [
