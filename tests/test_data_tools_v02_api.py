@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -38,6 +39,27 @@ def _source_revision() -> SourceRevision:
         digest=artifact.digest,
         artifact=artifact,
     )
+
+
+@pytest.fixture
+def source_conversation_row() -> dict[str, Any]:
+    """Self-contained structured import row with training and management fields."""
+
+    return {
+        "_acl": ["org:synthetic-itops"],
+        "_ingestBatch": "fixture-batch-local",
+        "_operatorAnnotation": "metadata only; do not train as answer text",
+        "_reviewNote": "LOCAL_OPERATOR_ONLY_SENTINEL_DO_NOT_TRAIN",
+        "conversationId": "LOCAL-CONV-01",
+        "messages": [
+            {"content": "Question one?", "role": "user"},
+            {"content": "Answer one.", "role": "assistant"},
+            {"content": "Question two?", "role": "user"},
+            {"content": "Answer two.", "role": "assistant"},
+        ],
+        "sampleId": "LOCAL-CONV-01-SAMPLE",
+        "sourceFamily": "family-01",
+    }
 
 
 def test_batch_upload_returns_required_nullable_outcomes(tmp_path: Path) -> None:
@@ -113,13 +135,10 @@ def test_batch_body_limit_covers_streamed_requests_without_content_length() -> N
     asyncio.run(run())
 
 
-def test_structured_messages_keep_management_data_out_of_training_text() -> None:
-    fixture = (
-        Path(__file__).parents[2]
-        / "workspace/tests/fixtures/catalyst-v02/source-conversations.jsonl"
-    )
-    row = json.loads(fixture.read_text(encoding="utf-8").splitlines()[0])
-
+def test_structured_messages_keep_management_data_out_of_training_text(
+    source_conversation_row: dict[str, Any],
+) -> None:
+    row = source_conversation_row
     block = DataToolsService._rows_to_blocks(_source_revision(), [row])[0]
     learned = json.loads(block.text)
 
@@ -133,20 +152,21 @@ def test_structured_messages_keep_management_data_out_of_training_text() -> None
         ]
     }
     assert block.source_family_id == "family-01"
-    assert block.conversation_id == "ORCHID-01-CONV-01"
-    assert block.group_id == "ORCHID-01-CONV-01"
-    assert block.sample_id == "ORCHID-01-CONV-01-SAMPLE"
+    assert block.conversation_id == "LOCAL-CONV-01"
+    assert block.group_id == "LOCAL-CONV-01"
+    assert block.sample_id == "LOCAL-CONV-01-SAMPLE"
     assert block.policy.allowed_principal_refs == ["org:synthetic-itops"]
-    assert "ORCHID42_OPERATOR_ONLY_SENTINEL_DO_NOT_TRAIN_20261007" not in block.text
+    assert "LOCAL_OPERATOR_ONLY_SENTINEL_DO_NOT_TRAIN" not in block.text
     assert "_ingestBatch" not in block.text
+    assert "_operatorAnnotation" not in block.text
+    assert "_reviewNote" not in block.text
+    assert "_acl" not in block.text
 
 
-def test_structured_jsonl_rejects_ambiguous_family_and_unknown_message_roles() -> None:
-    fixture = (
-        Path(__file__).parents[2]
-        / "workspace/tests/fixtures/catalyst-v02/source-conversations.jsonl"
-    )
-    row = json.loads(fixture.read_text(encoding="utf-8").splitlines()[0])
+def test_structured_jsonl_rejects_ambiguous_family_and_unknown_message_roles(
+    source_conversation_row: dict[str, Any],
+) -> None:
+    row = source_conversation_row
     row["sourceFamilyId"] = "conflicting-family"
     with pytest.raises(StageExecutionFailure, match="conflicting source-family aliases"):
         DataToolsService._rows_to_blocks(_source_revision(), [row])
