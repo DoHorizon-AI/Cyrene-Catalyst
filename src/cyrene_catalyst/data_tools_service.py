@@ -52,6 +52,7 @@ from cyrene_catalyst.domain import (
 )
 from cyrene_catalyst.engine import DataPreparationPort, SourceInspection
 from cyrene_catalyst.errors import CatalystError, DataEngineFailure
+from cyrene_catalyst.logging import emit_diagnostic_error
 from cyrene_catalyst.processing_runs import ProcessingRunCoordinator, StageExecutionFailure
 from cyrene_catalyst.store import CatalystStore
 from cyrene_catalyst.workspace_auth import WorkspaceServicePrincipal
@@ -234,8 +235,16 @@ def _detect_source_format(
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     ImportFormat.TEXT,
                 )
-        except (OSError, zipfile.BadZipFile):
-            pass
+        except (OSError, zipfile.BadZipFile) as exc:
+            emit_diagnostic_error(
+                "catalyst.source_format_probe",
+                "CATALYST_SOURCE_DOCX_PROBE_FAILED",
+                "The DOCX package metadata could not be read; continuing format detection.",
+                attributes={
+                    "probe": "docx_zip_metadata",
+                    "error_type": type(exc).__name__,
+                },
+            )
     if sample.startswith(b"PAR1"):
         return "application/vnd.apache.parquet", ImportFormat.PARQUET
     if suffix in {".parquet", ".pq"} or request_type == "application/vnd.apache.parquet":
@@ -276,7 +285,7 @@ def _detect_source_format(
             else:
                 return "application/x-ndjson", ImportFormat.JSONL
         except json.JSONDecodeError:
-            pass
+            pass  # diagnostic-allow: JSONL probing falls through to CSV or text classification
     if nonempty and "," in nonempty[0] and len(nonempty) > 1:
         return "text/csv", ImportFormat.CSV
     if decoded:
