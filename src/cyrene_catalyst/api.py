@@ -19,10 +19,15 @@ from fastapi import FastAPI, Header, Query, Request
 from fastapi import Path as ApiPath
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, Response
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from cyrene_catalyst.artifacts import LocalArtifactPlane
 from cyrene_catalyst.data_tools_api import build_data_tools_router
-from cyrene_catalyst.data_tools_service import DataToolsService
+from cyrene_catalyst.data_tools_service import (
+    MAX_BATCH_REQUEST_BYTES,
+    DataToolsService,
+    _error,
+)
 from cyrene_catalyst.data_tools_store import DataToolsStore
 from cyrene_catalyst.domain import (
     ConfigureMappingRequest,
@@ -62,6 +67,55 @@ from cyrene_catalyst.workspace_auth import (
 _UI_HTML = (Path(__file__).parent / "ui" / "index.html").read_text(encoding="utf-8")
 
 
+class BatchUploadBodyLimitMiddleware:
+    """Enforce the multipart request cap before FastAPI parses/spools uploaded files."""
+
+    def __init__(self, app: ASGIApp, max_bytes: int = MAX_BATCH_REQUEST_BYTES) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if (
+            scope["type"] != "http"
+            or scope.get("method") != "POST"
+            or not str(scope.get("path", "")).endswith("/sources/batch")
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        headers = {key.lower(): value for key, value in scope.get("headers", [])}
+        declared_length: int | None = None
+        raw_length = headers.get(b"content-length")
+        if raw_length is not None:
+            try:
+                declared_length = int(raw_length)
+            except ValueError:
+                declared_length = None
+
+        received = 0
+
+        async def bounded_receive() -> Message:
+            nonlocal received
+            if declared_length is not None and declared_length > self.max_bytes:
+                raise self._too_large()
+            message = await receive()
+            if message.get("type") == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    raise self._too_large()
+            return message
+
+        await self.app(scope, bounded_receive, send)
+
+    def _too_large(self) -> CatalystError:
+        return _error(
+            "CATALYST_SOURCE_BATCH_TOO_LARGE",
+            "Batch upload is too large",
+            f"A batch request may contain at most {self.max_bytes} bytes.",
+            413,
+        )
+
+
 def create_app(
     *,
     database_path: Path,
@@ -83,6 +137,7 @@ def create_app(
     )
     app = FastAPI(title="Cyrene Catalyst Product API", version="1.0.0")
     install_trial_auth(app, authenticator=trial_authenticator, required=trial_auth_required)
+    app.add_middleware(BatchUploadBodyLimitMiddleware)
     data_tools_store = DataToolsStore(database_path)
     data_tools_service = DataToolsService(
         datasets=store,

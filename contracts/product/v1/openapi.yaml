@@ -93,6 +93,44 @@ paths:
         '404': {$ref: '#/components/responses/Problem'}
         '413': {$ref: '#/components/responses/Problem'}
         '422': {$ref: '#/components/responses/Problem'}
+  /api/v1/datasets/{datasetId}/sources/batch:
+    parameters:
+      - $ref: '#/components/parameters/DatasetId'
+    post:
+      operationId: uploadSourceRevisionsBatch
+      description: >-
+        Store original file bytes independently without starting parse. Repeat
+        the multipart part named `files[]` once per file. At most 20 files are
+        accepted, each at most 32 MiB, with 128 MiB aggregate stored bytes and
+        a 129 MiB complete request limit including multipart overhead. Per-file
+        failures are returned in the corresponding response item.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: ['files[]']
+              properties:
+                'files[]':
+                  type: array
+                  minItems: 1
+                  maxItems: 20
+                  items: {type: string, format: binary}
+              additionalProperties: false
+            encoding:
+              'files[]':
+                style: form
+                explode: true
+      responses:
+        '200':
+          description: Independent upload outcomes for each submitted file
+          content:
+            application/json:
+              schema: {$ref: './data-tools.schema.json#/$defs/BatchSourceUploadResponse'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
   /api/v1/datasets/{datasetId}/processing-runs:
     parameters:
       - $ref: '#/components/parameters/DatasetId'
@@ -192,6 +230,73 @@ paths:
                 type: array
                 items: {$ref: './data-tools.schema.json#/$defs/ContentRevision'}
         '404': {$ref: '#/components/responses/Problem'}
+  /api/v1/datasets/{datasetId}/source-parse-reports:
+    parameters:
+      - $ref: '#/components/parameters/DatasetId'
+    get:
+      operationId: listSourceParseReports
+      description: >-
+        Return one durable parse report per processing run and SourceRevision.
+        Optional filters are conjunctive and never change SourceRevision.
+      parameters:
+        - name: sourceRevisionId
+          in: query
+          required: false
+          schema: {type: string, format: uuid}
+        - name: processingRunId
+          in: query
+          required: false
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Per-source parsing reports, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: './data-tools.schema.json#/$defs/SourceParseReport'}
+        '404': {$ref: '#/components/responses/Problem'}
+  /api/v1/datasets/{datasetId}/review-queue:
+    parameters:
+      - $ref: '#/components/parameters/DatasetId'
+    get:
+      operationId: getDatasetReviewQueue
+      description: >-
+        Return persisted parser/OCR review items and summary projections of
+        generated DRAFT ContentRevisions. ContentRevision remains the review
+        authority for generated drafts.
+      responses:
+        '200':
+          description: Review items and generated draft summaries
+          content:
+            application/json:
+              schema: {$ref: './data-tools.schema.json#/$defs/ReviewQueueResponse'}
+        '404': {$ref: '#/components/responses/Problem'}
+  /api/v1/review-items/{reviewItemId}/resolve:
+    parameters:
+      - name: reviewItemId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      operationId: resolveReviewItem
+      description: >-
+        ACKNOWLEDGE clears the bound parser/OCR approval blocker. REJECT records
+        the disposition and continues to block the bound revision.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: './data-tools.schema.json#/$defs/ResolveReviewItemRequest'}
+      responses:
+        '200':
+          description: Updated review item
+          content:
+            application/json:
+              schema: {$ref: './data-tools.schema.json#/$defs/ReviewItem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
   /api/v1/content-revisions/{revisionId}/blocks:
     parameters:
       - name: revisionId

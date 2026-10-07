@@ -10,11 +10,12 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Header, Query, Request
+from fastapi import APIRouter, File, Header, Query, Request, UploadFile
 from fastapi import Path as ApiPath
 from fastapi.responses import Response
 from pydantic import Field, model_validator
@@ -26,10 +27,22 @@ from cyrene_catalyst.data_tools_domain import (
     ContentRevisionState,
     ProcessingOperation,
     ProcessingRun,
+    ReviewItem,
+    ReviewItemResolution,
+    SourceParseReport,
     SourceRevision,
 )
-from cyrene_catalyst.data_tools_service import MAX_SOURCE_BYTES, DataToolsService, _error
+from cyrene_catalyst.data_tools_service import (
+    MAX_BATCH_REQUEST_BYTES,
+    MAX_BATCH_SOURCE_BYTES,
+    MAX_BATCH_SOURCES,
+    MAX_SOURCE_BYTES,
+    DataToolsService,
+    _error,
+)
 from cyrene_catalyst.domain import ContractModel, DatasetVersion
+from cyrene_catalyst.errors import CatalystError
+from cyrene_catalyst.logging import emit_diagnostic_error
 from cyrene_catalyst.trial_auth import trial_principal_from_request
 
 
@@ -81,10 +94,266 @@ class ContentBlockPage(ContractModel):
     blocks: list[ContentBlock]
 
 
+class BatchUploadError(ContractModel):
+    """Sanitized per-file upload failure. | 单文件上传错误回执。"""
+
+    code: str = Field(min_length=1, max_length=120)
+    message: str = Field(min_length=1, max_length=2000)
+    retryable: bool = False
+
+
+class BatchSourceUploadItem(ContractModel):
+    """Outcome for one multipart part, independent of neighboring files."""
+
+    filename: str = Field(min_length=1, max_length=512)
+    source: SourceRevision | None = Field(...)
+    error: BatchUploadError | None = Field(...)
+
+    @model_validator(mode="after")
+    def require_single_outcome(self) -> BatchSourceUploadItem:
+        if (self.source is None) == (self.error is None):
+            raise ValueError("A batch source item must contain exactly one of source or error.")
+        return self
+
+
+class BatchSourceUploadResponse(ContractModel):
+    """Independent results from one multipart upload request."""
+
+    items: list[BatchSourceUploadItem]
+
+
+class GeneratedDraftSummary(ContractModel):
+    """Small review-queue projection for one generated DRAFT revision."""
+
+    id: UUID
+    dataset_id: UUID
+    revision: int
+    state: Literal["DRAFT"] = "DRAFT"
+    block_count: int = Field(ge=0)
+    source_revision_ids: list[UUID]
+    created_at: datetime
+    processing_run_id: UUID | None = None
+
+
+class ReviewQueueResponse(ContractModel):
+    """Parser issues and generated content awaiting human attention."""
+
+    items: list[ReviewItem]
+    generated_drafts: list[GeneratedDraftSummary]
+
+
+class ResolveReviewItemRequest(ContractModel):
+    """Human disposition for one persisted Parser review item."""
+
+    action: Literal["ACKNOWLEDGE", "REJECT"]
+    note: str | None = Field(default=None, max_length=2000)
+
+
 def build_data_tools_router(service: DataToolsService) -> APIRouter:
     """Bind scoped Data Tools HTTP routes to one Catalyst service instance."""
 
     router = APIRouter()
+
+    @router.post(
+        "/api/v1/datasets/{datasetId}/sources/batch",
+        response_model=BatchSourceUploadResponse,
+        status_code=200,
+    )
+    async def upload_sources_batch(
+        dataset_id: Annotated[UUID, ApiPath(alias="datasetId")],
+        request: Request,
+        files: Annotated[
+            list[UploadFile],
+            File(alias="files[]", min_length=1, max_length=MAX_BATCH_SOURCES),
+        ],
+    ) -> BatchSourceUploadResponse:
+        """Store each source independently while retaining unsupported file bytes."""
+
+        principal = trial_principal_from_request(request)
+        service.require_dataset(dataset_id, principal)
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                request_bytes = int(content_length)
+            except ValueError:
+                raise _error(
+                    "CATALYST_SOURCE_BATCH_LENGTH_INVALID",
+                    "Batch upload size is invalid",
+                    "Provide a valid Content-Length header.",
+                    400,
+                ) from None
+            if request_bytes > MAX_BATCH_REQUEST_BYTES:
+                raise _error(
+                    "CATALYST_SOURCE_BATCH_TOO_LARGE",
+                    "Batch upload is too large",
+                    f"A batch request may contain at most {MAX_BATCH_REQUEST_BYTES} bytes.",
+                    413,
+                )
+        if len(files) > MAX_BATCH_SOURCES:
+            raise _error(
+                "CATALYST_SOURCE_BATCH_TOO_MANY_FILES",
+                "Batch contains too many files",
+                f"A batch may contain at most {MAX_BATCH_SOURCES} files.",
+                413,
+            )
+        items: list[BatchSourceUploadItem] = []
+        batch_bytes = 0
+        for upload in files:
+            raw_filename = upload.filename or ""
+            safe_name = Path(raw_filename.replace("\\", "/")).name
+            if not safe_name or safe_name in {".", ".."}:
+                items.append(
+                    BatchSourceUploadItem(
+                        filename=raw_filename[:512] or "upload",
+                        source=None,
+                        error=BatchUploadError(
+                            code="CATALYST_SOURCE_FILENAME_INVALID",
+                            message="Filename is invalid.",
+                        ),
+                    )
+                )
+                await upload.close()
+                continue
+
+            staged = service.artifacts.stage_path(f"batch-upload-{uuid4()}.source")
+            total = 0
+            oversized = False
+            try:
+                known_size = upload.size
+                if known_size is not None and known_size > MAX_SOURCE_BYTES:
+                    items.append(
+                        BatchSourceUploadItem(
+                            filename=safe_name,
+                            source=None,
+                            error=BatchUploadError(
+                                code="CATALYST_SOURCE_TOO_LARGE",
+                                message=(
+                                    f"A source file may contain at most {MAX_SOURCE_BYTES} bytes."
+                                ),
+                            ),
+                        )
+                    )
+                    continue
+                if known_size is not None and batch_bytes + known_size > MAX_BATCH_SOURCE_BYTES:
+                    items.append(
+                        BatchSourceUploadItem(
+                            filename=safe_name,
+                            source=None,
+                            error=BatchUploadError(
+                                code="CATALYST_SOURCE_BATCH_TOO_LARGE",
+                                message=(
+                                    "The accepted files in a batch may contain at most "
+                                    f"{MAX_BATCH_SOURCE_BYTES} bytes."
+                                ),
+                            ),
+                        )
+                    )
+                    continue
+                with staged.open("wb") as stream:
+                    while chunk := await upload.read(1024 * 1024):
+                        total += len(chunk)
+                        if total > MAX_SOURCE_BYTES:
+                            oversized = True
+                            break
+                        stream.write(chunk)
+                if total > MAX_SOURCE_BYTES:
+                    items.append(
+                        BatchSourceUploadItem(
+                            filename=safe_name,
+                            source=None,
+                            error=BatchUploadError(
+                                code="CATALYST_SOURCE_TOO_LARGE",
+                                message=(
+                                    f"A source file may contain at most {MAX_SOURCE_BYTES} bytes."
+                                ),
+                            ),
+                        )
+                    )
+                    continue
+                if batch_bytes + total > MAX_BATCH_SOURCE_BYTES:
+                    items.append(
+                        BatchSourceUploadItem(
+                            filename=safe_name,
+                            source=None,
+                            error=BatchUploadError(
+                                code="CATALYST_SOURCE_BATCH_TOO_LARGE",
+                                message=(
+                                    "The accepted files in a batch may contain at most "
+                                    f"{MAX_BATCH_SOURCE_BYTES} bytes."
+                                ),
+                            ),
+                        )
+                    )
+                    continue
+                if oversized:
+                    items.append(
+                        BatchSourceUploadItem(
+                            filename=safe_name,
+                            source=None,
+                            error=BatchUploadError(
+                                code="CATALYST_SOURCE_TOO_LARGE",
+                                message=(
+                                    f"A source file may contain at most {MAX_SOURCE_BYTES} bytes."
+                                ),
+                            ),
+                        )
+                    )
+                    continue
+                if total == 0:
+                    items.append(
+                        BatchSourceUploadItem(
+                            filename=safe_name,
+                            source=None,
+                            error=BatchUploadError(
+                                code="CATALYST_SOURCE_EMPTY",
+                                message="Upload a non-empty source file.",
+                            ),
+                        )
+                    )
+                    continue
+                source = service.create_source(
+                    dataset_id=dataset_id,
+                    filename=safe_name,
+                    media_type=upload.content_type,
+                    staged_path=staged,
+                    principal=principal,
+                )
+                items.append(BatchSourceUploadItem(filename=safe_name, source=source, error=None))
+            except CatalystError as exc:
+                items.append(
+                    BatchSourceUploadItem(
+                        filename=safe_name,
+                        source=None,
+                        error=BatchUploadError(
+                            code=exc.code,
+                            message=exc.detail[:2000],
+                            retryable=exc.retryable,
+                        ),
+                    )
+                )
+            except OSError as exc:
+                emit_diagnostic_error(
+                    "catalyst.batch_source_upload",
+                    "CATALYST_SOURCE_UPLOAD_IO_FAILED",
+                    "A source part could not be staged or published.",
+                    attributes={"error_type": type(exc).__name__},
+                )
+                batch_bytes += total
+                items.append(
+                    BatchSourceUploadItem(
+                        filename=safe_name,
+                        source=None,
+                        error=BatchUploadError(
+                            code="CATALYST_SOURCE_UPLOAD_IO_FAILED",
+                            message="The source could not be staged. Retry this file.",
+                            retryable=True,
+                        ),
+                    )
+                )
+            finally:
+                staged.unlink(missing_ok=True)
+                await upload.close()
+        return BatchSourceUploadResponse(items=items)
 
     @router.post(
         "/api/v1/datasets/{datasetId}/sources",
@@ -146,6 +415,67 @@ def build_data_tools_router(service: DataToolsService) -> APIRouter:
         dataset_id: Annotated[UUID, ApiPath(alias="datasetId")], request: Request
     ) -> list[SourceRevision]:
         return service.list_sources(dataset_id, trial_principal_from_request(request))
+
+    @router.get(
+        "/api/v1/datasets/{datasetId}/source-parse-reports",
+        response_model=list[SourceParseReport],
+        response_model_exclude_none=True,
+    )
+    def list_source_parse_reports(
+        dataset_id: Annotated[UUID, ApiPath(alias="datasetId")],
+        request: Request,
+        source_revision_id: Annotated[UUID | None, Query(alias="sourceRevisionId")] = None,
+        processing_run_id: Annotated[UUID | None, Query(alias="processingRunId")] = None,
+    ) -> list[SourceParseReport]:
+        return service.list_source_parse_reports(
+            dataset_id,
+            source_revision_id=source_revision_id,
+            processing_run_id=processing_run_id,
+            principal=trial_principal_from_request(request),
+        )
+
+    @router.get(
+        "/api/v1/datasets/{datasetId}/review-queue",
+        response_model=ReviewQueueResponse,
+        response_model_exclude_none=True,
+    )
+    def get_review_queue(
+        dataset_id: Annotated[UUID, ApiPath(alias="datasetId")],
+        request: Request,
+    ) -> ReviewQueueResponse:
+        principal = trial_principal_from_request(request)
+        items = service.list_review_items(dataset_id, principal=principal)
+        generated_drafts = [
+            GeneratedDraftSummary(
+                id=revision.id,
+                dataset_id=revision.dataset_id,
+                revision=revision.revision,
+                block_count=len(revision.blocks),
+                source_revision_ids=revision.source_revision_ids,
+                created_at=revision.created_at,
+                processing_run_id=processing_run_id,
+            )
+            for revision, processing_run_id in service.list_generated_drafts(dataset_id, principal)
+        ]
+        return ReviewQueueResponse(items=items, generated_drafts=generated_drafts)
+
+    @router.post(
+        "/api/v1/review-items/{reviewItemId}/resolve",
+        response_model=ReviewItem,
+        response_model_exclude_none=True,
+    )
+    def resolve_review_item(
+        review_item_id: Annotated[UUID, ApiPath(alias="reviewItemId")],
+        command: ResolveReviewItemRequest,
+        request: Request,
+    ) -> ReviewItem:
+        action = ReviewItemResolution(command.action)
+        return service.resolve_review_item(
+            review_item_id,
+            action,
+            note=command.note,
+            principal=trial_principal_from_request(request),
+        )
 
     @router.post(
         "/api/v1/datasets/{datasetId}/processing-runs",
