@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from datetime import timedelta
 from pathlib import Path
 from threading import Event, Thread
 from uuid import UUID, uuid4
@@ -268,6 +269,68 @@ def test_per_source_reports_are_independent_scoped_and_migrated(tmp_path: Path) 
     assert migrated.get_source_parse_report(unsupported.id, principal) is None
     assert migrated._connection.execute("PRAGMA foreign_key_check").fetchall() == []
     migrated.close()
+    catalyst.close()
+
+
+def test_source_report_timestamps_remain_monotonic_after_wall_clock_reversal(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "report-clock.sqlite3"
+    catalyst = CatalystStore(database)
+    dataset = _dataset(catalyst, "report-clock")
+    store = DataToolsStore(database)
+    source = _source(dataset.id, "clock.pdf")
+    store.create_source(source)
+    run = _run(dataset.id, [source.id])
+    store.create_run(run)
+
+    observed_now = utc_now()
+    report_created = observed_now + timedelta(seconds=34)
+    queued = _report(
+        dataset.id,
+        source.id,
+        run.id,
+        SourceParseReportState.QUEUED,
+    ).model_copy(update={"created_at": report_created, "updated_at": report_created})
+    store.save_source_parse_report(queued)
+
+    running = store.save_source_parse_report(
+        queued.model_copy(
+            update={
+                "status": SourceParseReportState.RUNNING,
+                "started_at": observed_now,
+                "updated_at": observed_now,
+            }
+        )
+    )
+    assert running.status == SourceParseReportState.RUNNING
+    assert running.started_at is not None
+    assert running.started_at > running.created_at
+    assert running.updated_at > queued.updated_at
+
+    failed = store.save_source_parse_report(
+        running.model_copy(
+            update={
+                "status": SourceParseReportState.FAILED,
+                "failure": ProcessingFailure(
+                    code="CATALYST_SOURCE_PARSE_FAILED",
+                    message="The source could not be parsed.",
+                    retryable=False,
+                ),
+                "finished_at": observed_now,
+                "updated_at": observed_now,
+            }
+        )
+    )
+    assert failed.status == SourceParseReportState.FAILED
+    assert failed.started_at is not None
+    assert failed.finished_at is not None
+    assert failed.finished_at >= failed.started_at
+    assert failed.updated_at >= failed.finished_at
+    assert failed.updated_at > running.updated_at
+    assert store.get_source_parse_report(queued.id) == failed
+
+    store.close()
     catalyst.close()
 
 

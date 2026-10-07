@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from threading import RLock
 from uuid import UUID
@@ -441,8 +441,8 @@ class DataToolsStore:
             raise ValueError("SourceParseReport identity cannot change for one run/source pair.")
         if current.created_at != report.created_at:
             raise ValueError("SourceParseReport createdAt is immutable.")
-        if report.updated_at < current.updated_at:
-            raise ValueError("SourceParseReport updatedAt cannot move backwards.")
+        if report == current:
+            return current
         allowed = self._report_transitions()[current.status]
         if report.status not in allowed:
             raise ValueError(
@@ -454,6 +454,9 @@ class DataToolsStore:
             and report.content_revision_id != current.content_revision_id
         ):
             raise ValueError("SourceParseReport ContentRevision link is immutable once set.")
+        report = self._monotonic_report_update(report, current)
+        if report.updated_at < current.updated_at:
+            raise ValueError("SourceParseReport updatedAt cannot move backwards.")
         terminal = {
             SourceParseReportState.SUCCEEDED,
             SourceParseReportState.WARNING,
@@ -471,8 +474,6 @@ class DataToolsStore:
             )
             if report != expected:
                 raise ValueError("Terminal SourceParseReport details are immutable.")
-        if report == current:
-            return current
         saved = report.model_copy(update={"resource_version": current.resource_version + 1})
         self._connection.execute(
             "UPDATE data_tool_source_parse_reports SET status=?,updated_at=?,document=? "
@@ -486,6 +487,37 @@ class DataToolsStore:
             ),
         )
         return saved
+
+    @staticmethod
+    def _monotonic_report_update(
+        report: SourceParseReport,
+        current: SourceParseReport,
+    ) -> SourceParseReport:
+        """Clamp report event times when the host UTC wall clock steps backwards."""
+
+        tick = timedelta(microseconds=1)
+        updated_at = max(report.updated_at, utc_now(), current.updated_at + tick)
+        updates: dict[str, datetime] = {"updated_at": updated_at}
+
+        started_at = report.started_at or current.started_at
+        if started_at is not None and current.started_at is None:
+            started_at = max(started_at, current.created_at + tick)
+            updates["started_at"] = started_at
+
+        terminal = {
+            SourceParseReportState.SUCCEEDED,
+            SourceParseReportState.WARNING,
+            SourceParseReportState.FAILED,
+            SourceParseReportState.INTERRUPTED,
+            SourceParseReportState.CANCELLED,
+        }
+        if report.status in terminal and current.status not in terminal:
+            earliest_finish = max(updated_at, started_at or current.created_at)
+            finished_at = max(report.finished_at or utc_now(), earliest_finish)
+            updates["finished_at"] = finished_at
+            updates["updated_at"] = max(updated_at, finished_at)
+
+        return report.model_copy(update=updates)
 
     def get_source_parse_report(
         self,
