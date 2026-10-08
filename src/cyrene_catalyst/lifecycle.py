@@ -24,6 +24,7 @@ from cyrene_catalyst.domain import (
     MappingConfig,
     NormalizationConfig,
     PreparationState,
+    utc_now,
 )
 from cyrene_catalyst.errors import CatalystError
 from cyrene_catalyst.service import CatalystService
@@ -228,10 +229,16 @@ class LifecycleActions:
                 ),
                 NormalizationConfig(),
             )
-        preparation.source_refs = list(
-            dict.fromkeys([command.source_ref.uri, *command.provenance_refs])
+        updated = preparation.model_copy(
+            update={
+                "source_refs": list(
+                    dict.fromkeys([command.source_ref.uri, *command.provenance_refs])
+                ),
+                "updated_at": utc_now(),
+                "resource_version": preparation.resource_version + 1,
+            }
         )
-        self.service.store.save_preparation(preparation)
+        self.service.store.save_preparation(updated)
         self.service.store.remember_idempotency(
             scope="feedback-import",
             key=key,
