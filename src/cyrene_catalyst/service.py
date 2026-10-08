@@ -274,10 +274,14 @@ class CatalystService:
             request_hash(command),
         )
 
-    def get_dataset(self, dataset_id: UUID) -> Dataset:
+    def get_dataset(
+        self,
+        dataset_id: UUID,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> Dataset:
         """Read a Dataset or raise a stable not-found error. | 读取 Dataset。"""
 
-        dataset = self.store.get_dataset(dataset_id)
+        dataset = self.store.get_dataset(dataset_id, principal)
         if dataset is None:
             raise CatalystError(
                 code="CATALYST_DATASET_NOT_FOUND",
@@ -389,10 +393,14 @@ class CatalystService:
         if self.activity is not None:
             self.activity.close()
 
-    def get_version(self, version_id: UUID) -> DatasetVersion:
+    def get_version(
+        self,
+        version_id: UUID,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> DatasetVersion:
         """Read a published or failed DatasetVersion. | 读取已发布或失败版本。"""
 
-        version = self.store.get_version(version_id)
+        version = self.store.get_version(version_id, principal)
         if version is None:
             raise CatalystError(
                 code="CATALYST_VERSION_NOT_FOUND",
@@ -518,16 +526,24 @@ class CatalystService:
 
         return self.store.list_datasets(principal)
 
-    def list_preparations(self, dataset_id: UUID) -> list[Preparation]:
-        """List Datasets for the UI. | 列出整理会话。"""
+    def list_preparations(
+        self,
+        dataset_id: UUID,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> list[Preparation]:
+        """List Preparations in the owning Dataset scope. | 列出整理会话。"""
 
-        self.get_dataset(dataset_id)
-        return self.store.list_preparations(dataset_id)
+        self.get_dataset(dataset_id, principal)
+        return self.store.list_preparations(dataset_id, principal)
 
-    def get_preparation(self, preparation_id: UUID) -> Preparation:
+    def get_preparation(
+        self,
+        preparation_id: UUID,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> Preparation:
         """Read a Preparation or raise a stable not-found error. | 读取整理会话。"""
 
-        preparation = self.store.get_preparation(preparation_id)
+        preparation = self.store.get_preparation(preparation_id, principal)
         if preparation is None:
             raise CatalystError(
                 code="CATALYST_PREPARATION_NOT_FOUND",
@@ -546,17 +562,20 @@ class CatalystService:
         data: bytes,
         idempotency_key: str | None,
         content_type: str | None = None,
+        principal: WorkspaceServicePrincipal | None = None,
     ) -> Preparation:
         """Ingest raw source bytes and stage a preparation. | 摄取字节并建立整理会话。"""
 
-        self.get_dataset(dataset_id)
+        self.get_dataset(dataset_id, principal)
         scope = f"create-preparation:{dataset_id}"
         request_digest = hashlib.sha256(
             f"{name}\0{filename}\0{content_type or ''}\0".encode() + data
         ).hexdigest()
-        replay_id = self.store.resolve_idempotency(scope, idempotency_key, request_digest)
+        replay_id = self.store.resolve_idempotency(
+            scope, idempotency_key, request_digest, principal
+        )
         if replay_id is not None:
-            return self.get_preparation(UUID(replay_id))
+            return self.get_preparation(UUID(replay_id), principal)
 
         if len(data) > MAX_IMPORT_BYTES:
             raise CatalystError(
@@ -604,13 +623,21 @@ class CatalystService:
             request_hash=request_digest,
             resource_kind="preparation",
             resource_id=preparation.id,
+            principal=principal,
         )
         return preparation
 
-    def preview_raw(self, preparation_id: UUID, *, offset: int, limit: int) -> RawPreview:
+    def preview_raw(
+        self,
+        preparation_id: UUID,
+        *,
+        offset: int,
+        limit: int,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> RawPreview:
         """Preview imported rows. | 预览原始行。"""
 
-        preparation = self.get_preparation(preparation_id)
+        preparation = self.get_preparation(preparation_id, principal)
         rows = self._load_rows(preparation)
         return RawPreview(
             total=len(rows),
@@ -620,11 +647,16 @@ class CatalystService:
         )
 
     def preview_normalized(
-        self, preparation_id: UUID, *, offset: int, limit: int
+        self,
+        preparation_id: UUID,
+        *,
+        offset: int,
+        limit: int,
+        principal: WorkspaceServicePrincipal | None = None,
     ) -> NormalizedPreview:
         """Preview normalized samples with split labels. | 预览规范化样本。"""
 
-        preparation = self._require_mapped(preparation_id)
+        preparation = self._require_mapped(preparation_id, principal)
         output = self._run(preparation)
         items = [
             NormalizedPreviewItem(
@@ -640,10 +672,17 @@ class CatalystService:
             total=len(items), offset=offset, limit=limit, items=items[offset : offset + limit]
         )
 
-    def preview_errors(self, preparation_id: UUID, *, offset: int, limit: int) -> ErrorPreview:
+    def preview_errors(
+        self,
+        preparation_id: UUID,
+        *,
+        offset: int,
+        limit: int,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> ErrorPreview:
         """Preview rejected samples with concrete reasons. | 预览剔除样本。"""
 
-        preparation = self._require_mapped(preparation_id)
+        preparation = self._require_mapped(preparation_id, principal)
         output = self._run(preparation)
         errors = output.errors
         return ErrorPreview(
@@ -658,10 +697,11 @@ class CatalystService:
         preparation_id: UUID,
         mapping: MappingConfig,
         normalization: NormalizationConfig,
+        principal: WorkspaceServicePrincipal | None = None,
     ) -> Preparation:
         """Apply mapping/normalization and recompute the quality report. | 应用映射并重算报告。"""
 
-        preparation = self.get_preparation(preparation_id)
+        preparation = self.get_preparation(preparation_id, principal)
         self._require_state(
             preparation,
             {PreparationState.STAGED, PreparationState.MAPPED, PreparationState.SPLIT},
@@ -691,10 +731,15 @@ class CatalystService:
         self.store.save_preparation(updated)
         return updated
 
-    def configure_split(self, preparation_id: UUID, split: SplitConfig) -> Preparation:
+    def configure_split(
+        self,
+        preparation_id: UUID,
+        split: SplitConfig,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> Preparation:
         """Assign the deterministic group-level split. | 配置确定性划分。"""
 
-        preparation = self.get_preparation(preparation_id)
+        preparation = self.get_preparation(preparation_id, principal)
         self._require_state(
             preparation,
             {PreparationState.MAPPED, PreparationState.SPLIT},
@@ -730,10 +775,14 @@ class CatalystService:
         self.store.save_preparation(updated)
         return updated
 
-    def confirm_preparation(self, preparation_id: UUID) -> Preparation:
+    def confirm_preparation(
+        self,
+        preparation_id: UUID,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> Preparation:
         """Record the manual confirmation gate. | 记录人工确认。"""
 
-        preparation = self.get_preparation(preparation_id)
+        preparation = self.get_preparation(preparation_id, principal)
         self._require_state(preparation, {PreparationState.SPLIT}, "confirm")
         updated = preparation.model_copy(
             update={
@@ -746,16 +795,21 @@ class CatalystService:
         return updated
 
     def publish_preparation(
-        self, preparation_id: UUID, idempotency_key: str | None
+        self,
+        preparation_id: UUID,
+        idempotency_key: str | None,
+        principal: WorkspaceServicePrincipal | None = None,
     ) -> tuple[Preparation, DatasetVersion]:
         """Publish the confirmed bundle as an immutable DatasetVersion. | 发布不可变版本。"""
 
-        preparation = self.get_preparation(preparation_id)
+        preparation = self.get_preparation(preparation_id, principal)
         scope = f"publish-preparation:{preparation.id}"
         request_digest = self._publish_request_digest(preparation)
-        replay_id = self.store.resolve_idempotency(scope, idempotency_key, request_digest)
+        replay_id = self.store.resolve_idempotency(
+            scope, idempotency_key, request_digest, principal
+        )
         if replay_id is not None:
-            return preparation, self.get_version(UUID(replay_id))
+            return preparation, self.get_version(UUID(replay_id), principal)
         self._require_state(preparation, {PreparationState.CONFIRMED}, "publish")
 
         if (
@@ -916,6 +970,7 @@ class CatalystService:
             request_hash=request_digest,
             resource_kind="dataset-version",
             resource_id=version.id,
+            principal=principal,
         )
         return published, version
 
@@ -964,10 +1019,15 @@ class CatalystService:
                     _validate_sample_content(row, schema_fields, f"{file_name} row {index}")
         return row_count
 
-    def resolve_export(self, preparation_id: UUID, file_name: str) -> ExportFile:
+    def resolve_export(
+        self,
+        preparation_id: UUID,
+        file_name: str,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> ExportFile:
         """Resolve one export file for download. | 解析导出文件。"""
 
-        preparation = self.get_preparation(preparation_id)
+        preparation = self.get_preparation(preparation_id, principal)
         for export in preparation.exports:
             if export.name == file_name:
                 return export
@@ -1060,10 +1120,14 @@ class CatalystService:
             preparation.split,
         )
 
-    def _require_mapped(self, preparation_id: UUID) -> Preparation:
+    def _require_mapped(
+        self,
+        preparation_id: UUID,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> Preparation:
         """Load a preparation that has a mapping configured. | 要求已配置映射。"""
 
-        preparation = self.get_preparation(preparation_id)
+        preparation = self.get_preparation(preparation_id, principal)
         if preparation.state in {
             PreparationState.STAGED,
         }:

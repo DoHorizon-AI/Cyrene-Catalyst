@@ -580,8 +580,9 @@ def create_app(
     )
     def list_preparations(
         dataset_id: Annotated[UUID, ApiPath(alias="datasetId")],
+        request: Request,
     ) -> list[Preparation]:
-        return service.list_preparations(dataset_id)
+        return service.list_preparations(dataset_id, trial_principal_from_request(request))
 
     @app.post(
         "/api/v1/datasets/{datasetId}/preparations",
@@ -604,6 +605,7 @@ def create_app(
             data=data,
             idempotency_key=idempotency_key,
             content_type=request.headers.get("content-type"),
+            principal=trial_principal_from_request(request),
         )
 
     @app.get(
@@ -613,21 +615,30 @@ def create_app(
     )
     def get_preparation(
         preparation_id: Annotated[UUID, ApiPath(alias="preparationId")],
+        request: Request,
     ) -> Preparation:
-        return service.get_preparation(preparation_id)
+        return service.get_preparation(preparation_id, trial_principal_from_request(request))
 
     @app.get("/api/v1/preparations/{preparationId}/samples", response_model=None)
     def preview_samples(
         preparation_id: Annotated[UUID, ApiPath(alias="preparationId")],
+        request: Request,
         stage: Annotated[Literal["raw", "normalized", "errors"], Query()] = "raw",
         offset: Annotated[int, Query(ge=0)] = 0,
         limit: Annotated[int, Query(ge=1, le=200)] = 20,
     ) -> RawPreview | NormalizedPreview | ErrorPreview:
+        principal = trial_principal_from_request(request)
         if stage == "raw":
-            return service.preview_raw(preparation_id, offset=offset, limit=limit)
+            return service.preview_raw(
+                preparation_id, offset=offset, limit=limit, principal=principal
+            )
         if stage == "normalized":
-            return service.preview_normalized(preparation_id, offset=offset, limit=limit)
-        return service.preview_errors(preparation_id, offset=offset, limit=limit)
+            return service.preview_normalized(
+                preparation_id, offset=offset, limit=limit, principal=principal
+            )
+        return service.preview_errors(
+            preparation_id, offset=offset, limit=limit, principal=principal
+        )
 
     @app.patch(
         "/api/v1/preparations/{preparationId}/mapping",
@@ -637,8 +648,14 @@ def create_app(
     def configure_mapping(
         preparation_id: Annotated[UUID, ApiPath(alias="preparationId")],
         command: ConfigureMappingRequest,
+        request: Request,
     ) -> Preparation:
-        return service.configure_mapping(preparation_id, command.mapping, command.normalization)
+        return service.configure_mapping(
+            preparation_id,
+            command.mapping,
+            command.normalization,
+            trial_principal_from_request(request),
+        )
 
     @app.patch(
         "/api/v1/preparations/{preparationId}/split",
@@ -648,8 +665,11 @@ def create_app(
     def configure_split(
         preparation_id: Annotated[UUID, ApiPath(alias="preparationId")],
         command: ConfigureSplitRequest,
+        request: Request,
     ) -> Preparation:
-        return service.configure_split(preparation_id, command.split)
+        return service.configure_split(
+            preparation_id, command.split, trial_principal_from_request(request)
+        )
 
     @app.post(
         "/api/v1/preparations/{preparationId}/confirm",
@@ -658,8 +678,9 @@ def create_app(
     )
     def confirm_preparation(
         preparation_id: Annotated[UUID, ApiPath(alias="preparationId")],
+        request: Request,
     ) -> Preparation:
-        return service.confirm_preparation(preparation_id)
+        return service.confirm_preparation(preparation_id, trial_principal_from_request(request))
 
     @app.post(
         "/api/v1/preparations/{preparationId}/publish",
@@ -669,9 +690,12 @@ def create_app(
     )
     def publish_preparation(
         preparation_id: Annotated[UUID, ApiPath(alias="preparationId")],
+        request: Request,
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=200),
     ) -> PublishPreparationResponse:
-        preparation, version = service.publish_preparation(preparation_id, idempotency_key)
+        preparation, version = service.publish_preparation(
+            preparation_id, idempotency_key, trial_principal_from_request(request)
+        )
         return PublishPreparationResponse(preparation=preparation, dataset_version=version)
 
     @app.get(
@@ -680,8 +704,9 @@ def create_app(
     )
     def list_exports(
         preparation_id: Annotated[UUID, ApiPath(alias="preparationId")],
+        request: Request,
     ) -> list[dict[str, object]]:
-        preparation = service.get_preparation(preparation_id)
+        preparation = service.get_preparation(preparation_id, trial_principal_from_request(request))
         return [
             {
                 "name": export.name,
@@ -696,8 +721,11 @@ def create_app(
     def download_export(
         preparation_id: Annotated[UUID, ApiPath(alias="preparationId")],
         file_name: Annotated[str, ApiPath(alias="fileName")],
+        request: Request,
     ) -> Response:
-        export = service.resolve_export(preparation_id, file_name)
+        export = service.resolve_export(
+            preparation_id, file_name, trial_principal_from_request(request)
+        )
         path = service.artifacts.resolve(export.artifact)
         return Response(
             content=path.read_bytes(),
@@ -712,8 +740,9 @@ def create_app(
     )
     def create_yield_draft(
         preparation_id: Annotated[UUID, ApiPath(alias="preparationId")],
+        request: Request,
     ) -> HandoffReceipt:
-        preparation = service.get_preparation(preparation_id)
+        preparation = service.get_preparation(preparation_id, trial_principal_from_request(request))
         if preparation.published_version_id is None:
             raise CatalystError(
                 code="CATALYST_VERSION_NOT_PUBLISHED",

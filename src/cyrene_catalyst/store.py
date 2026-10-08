@@ -287,29 +287,54 @@ class CatalystStore:
                 (str(preparation.id), str(preparation.dataset_id), document),
             )
 
-    def get_preparation(self, preparation_id: UUID) -> Preparation | None:
-        """Read a Preparation by opaque id. | 按不透明 ID 读取 Preparation。"""
+    def get_preparation(
+        self,
+        preparation_id: UUID,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> Preparation | None:
+        """Read a Preparation by id inside its owning Dataset scope."""
 
         with self._lock:
-            row = self._connection.execute(
-                "SELECT p.document FROM preparations AS p "
-                "JOIN datasets AS d ON d.id = p.dataset_id "
-                "WHERE p.id = ? AND d.organization_id IS NULL AND d.workspace_id IS NULL",
-                (str(preparation_id),),
-            ).fetchone()
+            if principal is None:
+                row = self._connection.execute(
+                    "SELECT p.document FROM preparations AS p "
+                    "JOIN datasets AS d ON d.id = p.dataset_id "
+                    "WHERE p.id = ? AND d.organization_id IS NULL AND d.workspace_id IS NULL",
+                    (str(preparation_id),),
+                ).fetchone()
+            else:
+                row = self._connection.execute(
+                    "SELECT p.document FROM preparations AS p "
+                    "JOIN datasets AS d ON d.id = p.dataset_id "
+                    "WHERE p.id = ? AND d.organization_id = ? AND d.workspace_id = ?",
+                    (str(preparation_id), principal.organization_id, principal.workspace_id),
+                ).fetchone()
         return Preparation.model_validate_json(row["document"]) if row else None
 
-    def list_preparations(self, dataset_id: UUID) -> list[Preparation]:
-        """List Preparations of one Dataset in insertion order. | 列出 Dataset 的整理会话。"""
+    def list_preparations(
+        self,
+        dataset_id: UUID,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> list[Preparation]:
+        """List Preparations inside the owning Dataset scope in insertion order."""
 
         with self._lock:
-            rows = self._connection.execute(
-                "SELECT p.document FROM preparations AS p "
-                "JOIN datasets AS d ON d.id = p.dataset_id "
-                "WHERE p.dataset_id = ? AND d.organization_id IS NULL "
-                "AND d.workspace_id IS NULL ORDER BY p.rowid",
-                (str(dataset_id),),
-            ).fetchall()
+            if principal is None:
+                rows = self._connection.execute(
+                    "SELECT p.document FROM preparations AS p "
+                    "JOIN datasets AS d ON d.id = p.dataset_id "
+                    "WHERE p.dataset_id = ? AND d.organization_id IS NULL "
+                    "AND d.workspace_id IS NULL ORDER BY p.rowid",
+                    (str(dataset_id),),
+                ).fetchall()
+            else:
+                rows = self._connection.execute(
+                    "SELECT p.document FROM preparations AS p "
+                    "JOIN datasets AS d ON d.id = p.dataset_id "
+                    "WHERE p.dataset_id = ? AND d.organization_id = ? "
+                    "AND d.workspace_id = ? ORDER BY p.rowid",
+                    (str(dataset_id), principal.organization_id, principal.workspace_id),
+                ).fetchall()
         return [Preparation.model_validate_json(row["document"]) for row in rows]
 
     def next_version(self, dataset_id: UUID) -> int:
