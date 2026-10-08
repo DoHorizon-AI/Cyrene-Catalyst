@@ -46,14 +46,22 @@ production storage.
 - Never add credentials, private dataset samples, generated artifacts, or local
   absolute paths.
 - Use a focused branch and a conventional commit; open a pull request against
-  `main` and describe local, hosted, and unrun evidence separately. The
-  published source starts from the clean-root `main`; the private history
-  archive is not a development base.
+  `develop` and describe local, hosted, and unrun evidence separately. The
+  GitHub default branch `develop` is the development base; protected `main`
+  receives release promotion from `develop`.
 
 - `/api/v1` 下的 API 与 schema 修改必须同步更新对应契约文档。
 - 依赖变更必须同步 `uv.lock`、第三方声明与 SBOM 入口。
 - `docs/` 下新增或大幅修改的文件必须同时包含英文和中文。
 - 不得加入凭证、私有数据集样本、生成制品或本机绝对路径。
-- 使用聚焦分支与 Conventional Commit；向 `main` 提交 PR，并分别说明本地、
-  Hosted 与未运行的证据。公开源码从 clean-root `main` 开始；私有历史归档不是
-  开发基线。
+- 使用聚焦分支与 Conventional Commit；向 `develop` 提交 PR，并分别说明本地、
+  Hosted 与未运行的证据。GitHub 默认分支 `develop` 是开发基线；受保护的 `main`
+  接收来自 `develop` 的发布提升。
+
+## Task lifecycle / 任务生命周期
+
+All contributors and coding agents must follow [AGENTS.md](AGENTS.md) and the shared
+[Cyrene task lifecycle requirements](https://github.com/DoHorizon-AI/Cyrene-Workspace/blob/develop/docs/TASK_LIFECYCLE.md).
+
+所有贡献者和 AI 编码代理均须遵循 [AGENTS.md](AGENTS.md) 与共享的
+[Cyrene 任务生命周期要求](https://github.com/DoHorizon-AI/Cyrene-Workspace/blob/develop/docs/TASK_LIFECYCLE.md)。
