@@ -1,5 +1,7 @@
 {
   "fixtureVersion": "1",
+  "provenance": "Authored business examples created for Catalyst acceptance; no customer data or third-party dataset content.",
+  "license": "Apache-2.0",
   "totalRecords": 28,
   "files": [
     {

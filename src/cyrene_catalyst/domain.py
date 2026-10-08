@@ -36,6 +36,30 @@ class ContractModel(BaseModel):
     )
 
 
+class ProductCapabilityStatus(ContractModel):
+    """Report declared support and connection-ref configuration only.
+
+    中文:只报告已声明的支持范围与 connection_ref 配置状态。
+    """
+
+    id: str = Field(min_length=1, max_length=200)
+    interface_version: str = Field(min_length=1, max_length=100)
+    supported: Literal[True] = True
+    configured: bool
+    configuration_environment_variable: str = Field(min_length=1, max_length=200)
+
+
+class ProductCapabilityReport(ContractModel):
+    """Configuration-only capability view; it does not prove activation.
+
+    中文:仅供配置查询的 capability 视图，不代表服务已激活。
+    """
+
+    semantics: Literal["configuration-only"] = "configuration-only"
+    activation_verified: Literal[False] = False
+    capabilities: list[ProductCapabilityStatus]
+
+
 class DatasetState(StrEnum):
     """Product-owned Dataset lifecycle. | Dataset 产品生命周期。"""
 

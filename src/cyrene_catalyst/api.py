@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated, Literal
@@ -24,6 +25,9 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from cyrene_catalyst.artifacts import LocalArtifactPlane
 from cyrene_catalyst.data_tools_api import build_data_tools_router
 from cyrene_catalyst.data_tools_service import (
+    DATASET_GENERATION_CONNECTION_ENV,
+    DOCUMENT_PARSING_CONNECTION_ENV,
+    KNOWLEDGE_PREPARATION_CONNECTION_ENV,
     MAX_BATCH_REQUEST_BYTES,
     DataToolsService,
     _error,
@@ -41,10 +45,18 @@ from cyrene_catalyst.domain import (
     NormalizedPreview,
     Preparation,
     ProblemDetails,
+    ProductCapabilityReport,
+    ProductCapabilityStatus,
     PublishPreparationResponse,
     RawPreview,
 )
-from cyrene_catalyst.engine import DataPreparationPort, data_preparation_from_environment
+from cyrene_catalyst.engine import (
+    DATASET_PREPARATION_CAPABILITY,
+    DATASET_PREPARATION_CONNECTION_ENV,
+    DATASET_PREPARATION_INTERFACE_VERSION,
+    DataPreparationPort,
+    data_preparation_from_environment,
+)
 from cyrene_catalyst.errors import CatalystError, DataEngineFailure, map_catalyst_error
 from cyrene_catalyst.lifecycle import (
     FeedbackImportRequest,
@@ -65,6 +77,16 @@ from cyrene_catalyst.workspace_auth import (
 )
 
 _UI_HTML = (Path(__file__).parent / "ui" / "index.html").read_text(encoding="utf-8")
+_CAPABILITY_CONFIGURATION_ENVIRONMENTS: tuple[tuple[str, str, str], ...] = (
+    (
+        DATASET_PREPARATION_CAPABILITY,
+        DATASET_PREPARATION_INTERFACE_VERSION,
+        DATASET_PREPARATION_CONNECTION_ENV,
+    ),
+    ("document.parsing.v1", "1", DOCUMENT_PARSING_CONNECTION_ENV),
+    ("dataset.knowledge.v1", "1", KNOWLEDGE_PREPARATION_CONNECTION_ENV),
+    ("dataset.generation.v1", "1", DATASET_GENERATION_CONNECTION_ENV),
+)
 
 
 class BatchUploadBodyLimitMiddleware:
@@ -163,6 +185,31 @@ def create_app(
         """Report process liveness to the container orchestrator. | 向容器编排器报告进程存活。"""
 
         return {"status": "ok"}
+
+    @app.get(
+        "/api/v1/system/capabilities",
+        response_model=ProductCapabilityReport,
+        operation_id="getProductCapabilityConfiguration",
+    )
+    def capability_configuration() -> ProductCapabilityReport:
+        """Expose supported Plugin contracts and configured refs, not activation.
+
+        中文:公开支持的 Plugin 契约与引用配置，不推断运行时激活状态。
+        """
+
+        return ProductCapabilityReport(
+            capabilities=[
+                ProductCapabilityStatus(
+                    id=capability,
+                    interface_version=interface_version,
+                    configured=bool(os.environ.get(environment_variable, "").strip()),
+                    configuration_environment_variable=environment_variable,
+                )
+                for capability, interface_version, environment_variable in (
+                    _CAPABILITY_CONFIGURATION_ENVIRONMENTS
+                )
+            ]
+        )
 
     @app.middleware("http")
     async def propagate_trace(

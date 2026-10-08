@@ -153,6 +153,7 @@ artifact for existing SFT/Yield consumers. A later approved revision makes
 older derived runs and published profiles report `stale: true`.
 
 The local service resolves direct Plugin bindings from
+`CYRENE_DATASET_PREPARATION_CONNECTION_REF`,
 `CYRENE_DOCUMENT_PARSING_CONNECTION_REF`,
 `CYRENE_KNOWLEDGE_PREPARATION_CONNECTION_REF`, and
 `CYRENE_DATASET_GENERATION_CONNECTION_REF`. The Data Tools trial token is
@@ -161,6 +162,17 @@ The local service resolves direct Plugin bindings from
 (defaults `data-tools-trial` and `data-tools`). When configured, every route
 except `/healthz` requires the Bearer token and Dataset child resources enforce
 the resolved Workspace scope. Keep the token in the server-side Client proxy.
+
+## Capability configuration endpoint
+
+`GET /api/v1/system/capabilities` reports the four Plugin contracts supported
+by the Product and whether each corresponding `connection_ref` environment
+variable is non-empty. The response sets `semantics` to
+`configuration-only` and `activationVerified` to `false`: it does not probe an
+endpoint, claim a Plugin is running, or expose the opaque reference value.
+`/healthz` remains a process-liveness check. An operation that needs an
+unconfigured capability returns a structured HTTP 503 such as
+`CATALYST_PLUGIN_NOT_CONFIGURED`.
 ---
 <!-- Chinese Translation / 中文翻译 -->
 
@@ -272,10 +284,20 @@ ID，再调用 `POST /api/v1/content-revisions/{revisionId}/review` 批准新修
 既有 SFT/Yield 消费方。之后产生并批准的新修订会使旧派生运行和 profile 显示
 `stale: true`。
 
-本地服务从 `CYRENE_DOCUMENT_PARSING_CONNECTION_REF`、
+本地服务从 `CYRENE_DATASET_PREPARATION_CONNECTION_REF`、
+`CYRENE_DOCUMENT_PARSING_CONNECTION_REF`、
 `CYRENE_KNOWLEDGE_PREPARATION_CONNECTION_REF` 和
 `CYRENE_DATASET_GENERATION_CONNECTION_REF` 解析直连 Plugin binding。Data Tools 试用
 token 为 `CYRENE_DATA_TOOLS_TOKEN`；固定身份可由
 `CYRENE_DATA_TOOLS_ORGANIZATION_ID` 与 `CYRENE_DATA_TOOLS_WORKSPACE_ID` 配置，默认值为
 `data-tools-trial` 和 `data-tools`。配置后，除 `/healthz` 外所有路由均要求 Bearer
 token，并对 Dataset 子资源执行 Workspace 范围校验。token 应由服务端 Client 代理持有。
+
+## Capability 配置状态接口
+
+`GET /api/v1/system/capabilities` 报告 Product 声明支持的四种 Plugin 契约，以及各自
+`connection_ref` 环境变量是否非空。响应中的 `semantics` 固定为
+`configuration-only`，`activationVerified` 固定为 `false`：接口不会探测端点、
+声称 Plugin 正在运行，也不会返回不透明引用值。`/healthz` 仍只检查进程存活。
+需要未配置能力的操作会返回结构化 HTTP 503，例如
+`CATALYST_PLUGIN_NOT_CONFIGURED`。

@@ -89,13 +89,49 @@ python scripts/verify_training_bundle.py /tmp/catalyst-business/business-sft.zip
 uv run python scripts/accept_training_curation_medium.py --output-directory /tmp/catalyst-medium
 ```
 
+For an installed Catalyst service, the release includes a separate external
+consumer. Run it from the installed package; it uses only the Product HTTP API
+and the packaged 28-record authored fixture. It never starts or serves a Plugin.
+The installer must configure the supervised `dataset.preparation.v1` and
+`dataset.generation.v1` `connection_ref` values before running the consumer;
+capability configuration is checked before any dataset is created, then real
+curation and SFT requests verify that the service can use both. Set
+`CYRENE_DATA_TOOLS_CLIENT_TOKEN` in the consumer process when the service
+requires a bearer token:
+
+```bash
+cyrene-catalyst-accept-training-curation \
+  --base-url http://127.0.0.1:8004 \
+  --output-directory /tmp/catalyst-installed-acceptance
+cyrene-catalyst-verify-training-bundle \
+  /tmp/catalyst-installed-acceptance/authored-business-sft.zip
+```
+
+The external consumer creates a dedicated acceptance Dataset and retains its
+audit records. Its fixture and independent verifier ship in the published
+Python package, so the installer does not need a repository checkout.
+
+针对已安装的 Catalyst 服务，正式发行包提供独立的外部消费脚本。它只调用 Product HTTP API
+并读取随包分发的 28 条作者编写夹具，不会启动或托管 Plugin。安装器必须为受监管的
+`dataset.preparation.v1` 和 `dataset.generation.v1` 设置 `connection_ref`；脚本在创建 Dataset 前先
+检查两项 capability 配置，然后通过真实 curation 和 SFT 请求验证服务能否使用两项连接。服务要求
+Bearer token 时，在消费进程中设置
+`CYRENE_DATA_TOOLS_CLIENT_TOKEN`。运行上方两个发行包命令即可完成验收并独立检查导出的训练包。
+该脚本会创建专用验收 Dataset 并保留审计记录，夹具和独立验证器均随 Python 发行包交付，安装器无需
+克隆源码仓库。
+
 The authored mixed business fixture contains 28 records across four JSON/JSONL
 files and all five formats. Its intended reviewed result is 13 eligible and 15
 excluded records. The acceptance uses actual owner Plugins over the existing
 Direct transport and actual Product HTTP APIs, reopens persistence before review
 and before publishing, verifies repeated import/publication, and compares every
 exported conversation to its approved snapshot. It is fixed business test data,
-not customer-provided production evidence.
+not customer-provided production evidence. Its source, manifest, and independent
+consumer are included in the official Catalyst release under Apache-2.0.
+
+固定混合业务语料包含四个 JSON/JSONL 文件中的 28 条记录，覆盖五种格式；预期审核结果为 13 条可用、
+15 条排除。该夹具由作者编写且不是客户数据，来源说明和 Apache-2.0 许可证写入随包 manifest；夹具
+原件及独立消费者都包含在正式 Catalyst 发行包中。
 
 The existing source upload API retains each import as an independent source;
 identical bytes reuse the same content-addressed artifact. Importing the same

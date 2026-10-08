@@ -19,12 +19,12 @@ from typing import Any
 from uuid import UUID
 
 from fastapi.testclient import TestClient
-from verify_training_bundle import learned_messages, verify_bundle
 
 from cyrene_catalyst import create_app
+from cyrene_catalyst_consumer.training_bundle import learned_messages, verify_bundle
 
 _ROOT = Path(__file__).resolve().parents[1]
-_FIXTURE = _ROOT / "tests/fixtures/training-curation-v03"
+_FIXTURE = _ROOT / "src/cyrene_catalyst/fixtures/training-curation-v03"
 
 
 @contextmanager
@@ -400,6 +400,8 @@ def run_acceptance(output_directory: Path) -> dict[str, Any]:
     report = {
         "status": "PASS",
         "fixture": "fixed mixed authored business corpus; no customer data",
+        "fixtureProvenance": fixture["provenance"],
+        "fixtureLicense": fixture["license"],
         "totalRecords": 28,
         "beforeReview": before_counts,
         "afterReview": after_counts,
