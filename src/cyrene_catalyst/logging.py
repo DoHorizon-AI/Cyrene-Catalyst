@@ -51,6 +51,13 @@ def is_sensitive_key(key: str) -> bool:
     lower = key.lower().replace("-", "_")
     if lower == "tokens" or lower.endswith("_tokens") or lower == "token_count":
         return False
+    if (
+        lower == "author"
+        or lower.startswith("author_")
+        or lower.startswith("authored")
+        or lower.startswith("authority")
+    ):
+        return False
     return any(sub in lower for sub in _SENSITIVE_KEY_SUBSTRINGS)
 
 

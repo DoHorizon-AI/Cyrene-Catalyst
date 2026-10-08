@@ -93,9 +93,9 @@ jobs:
       CHANNEL: ${{ github.ref == 'refs/heads/develop' && 'preview' || 'stable' }}
       RELEASE_ID: ${{ (github.ref == 'refs/heads/develop' && 'preview-' || 'stable-') }}${{ github.sha }}
       IMAGE_TAG: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-      CATALOG_HELPER_SOURCE_COMMIT: 098ce4affb2fac38754eb18bd40ed679377d4c25
+      CATALOG_HELPER_SOURCE_COMMIT: aa35c08060210f4986eb7d5a45cb7210917f684d
       CATALOG_RELEASE_ID: ${{ inputs.catalog_release_id || (github.ref == 'refs/heads/develop' && vars.CYRENE_PREVIEW_COMPONENT_CATALOG_RELEASE_ID) || (github.ref != 'refs/heads/develop' && vars.CYRENE_STABLE_COMPONENT_CATALOG_RELEASE_ID) || '' }}
-      WORKSPACE_BUILDER_COMMIT: 2b1210a19b5596cb90e3ac7c46a912a8a255da80
+      WORKSPACE_BUILDER_COMMIT: e68bc05b2863197b24efb67ca0222adad206e787
       TARGET_PROFILE: ${{ matrix.target_profile }}
     steps:
       - name: Check out exact Product source
@@ -685,7 +685,7 @@ jobs:
       GITHUB_TOKEN: ${{ github.token }}
       CHANNEL: ${{ github.ref == 'refs/heads/develop' && 'preview' || 'stable' }}
       RELEASE_ID: ${{ (github.ref == 'refs/heads/develop' && 'preview-' || 'stable-') }}${{ github.sha }}
-      CATALOG_HELPER_SOURCE_COMMIT: 098ce4affb2fac38754eb18bd40ed679377d4c25
+      CATALOG_HELPER_SOURCE_COMMIT: aa35c08060210f4986eb7d5a45cb7210917f684d
       CATALOG_RELEASE_ID: ${{ needs.product_native_build.outputs.catalog_release_id }}
       CATALOG_SHA256: ${{ needs.product_native_build.outputs.catalog_sha256 }}
       PLATFORM_SOURCE_COMMIT: ${{ needs.product_native_build.outputs.platform_source_commit }}

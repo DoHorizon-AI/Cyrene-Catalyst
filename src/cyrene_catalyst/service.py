@@ -17,6 +17,9 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
+from cy_artifacts import ArtifactError
+from pydantic import ValidationError
+
 from cyrene_catalyst.artifacts import LocalArtifactPlane
 from cyrene_catalyst.domain import (
     ArtifactRef,
@@ -431,7 +434,7 @@ class CatalystService:
 
         try:
             output_path = self.artifacts.resolve(version.output)
-        except Exception as exc:
+        except (OSError, ArtifactError, CatalystError, KeyError, ValueError) as exc:
             raise CatalystError(
                 code="CATALYST_ARTIFACT_UNAVAILABLE",
                 title="Artifact unavailable",
@@ -471,7 +474,15 @@ class CatalystService:
                     inspection = self._inspect_source(target_path, ImportFormat.PARQUET)
                     total_rows = inspection.row_count
                     rows = inspection.rows[offset : offset + limit]
-        except Exception as exc:
+        except (
+            OSError,
+            json.JSONDecodeError,
+            DataEngineFailure,
+            CatalystError,
+            ValidationError,
+            KeyError,
+            ValueError,
+        ) as exc:
             raise CatalystError(
                 code="CATALYST_ARTIFACT_UNAVAILABLE",
                 title="Artifact unavailable",
@@ -690,8 +701,13 @@ class CatalystService:
             {PreparationState.MAPPED, PreparationState.SPLIT},
             "configure split",
         )
-        assert preparation.mapping is not None
-        assert preparation.normalization is not None
+        if preparation.mapping is None or preparation.normalization is None:
+            raise CatalystError(
+                code="CATALYST_INVALID_STATE",
+                title="Invalid preparation state",
+                detail="Preparation mapping and normalization must be configured before splitting.",
+                status=409,
+            )
         output = self._prepare_output(
             preparation.source,
             preparation.format,
@@ -743,10 +759,17 @@ class CatalystService:
             return preparation, self.get_version(UUID(replay_id))
         self._require_state(preparation, {PreparationState.CONFIRMED}, "publish")
 
-        assert preparation.mapping is not None  # state guarantees configuration
-        # 中文:该状态保证配置已存在
-        assert preparation.normalization is not None
-        assert preparation.split is not None
+        if (
+            preparation.mapping is None
+            or preparation.normalization is None
+            or preparation.split is None
+        ):
+            raise CatalystError(
+                code="CATALYST_INVALID_STATE",
+                title="Invalid preparation state",
+                detail="Preparation mapping, normalization, and split must be configured before publication.",
+                status=409,
+            )
         staging = self.artifacts.stage_dir(f"prep-{preparation.id}")
         output = self._prepare_output(
             preparation.source,
@@ -1020,9 +1043,13 @@ class CatalystService:
     def _run(self, preparation: Preparation) -> PreparationOutput:
         """Re-run the deterministic pipeline for a configured preparation. | 重跑确定性流水线。"""
 
-        assert preparation.mapping is not None  # guarded by _require_mapped
-        # 中文:由 _require_mapped 进行保护
-        assert preparation.normalization is not None
+        if preparation.mapping is None or preparation.normalization is None:
+            raise CatalystError(
+                code="CATALYST_INVALID_STATE",
+                title="Invalid preparation state",
+                detail="Preparation mapping and normalization must be configured.",
+                status=409,
+            )
         return self._prepare_output(
             preparation.source,
             preparation.format,
