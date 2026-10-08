@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterable
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import RLock
@@ -27,6 +28,7 @@ from cyrene_catalyst.data_tools_domain import (
     ProcessingStageState,
     ReviewItem,
     ReviewItemResolution,
+    ReviewItemsPage,
     ReviewItemState,
     SourceParseReport,
     SourceParseReportState,
@@ -806,6 +808,62 @@ class DataToolsStore:
             ).fetchall()
         return [ReviewItem.model_validate_json(row["document"]) for row in rows]
 
+    def list_review_items_page(
+        self,
+        dataset_id: UUID,
+        *,
+        state: ReviewItemState | None = None,
+        source_revision_id: UUID | None = None,
+        content_revision_id: UUID | None = None,
+        kind: str | None = None,
+        code: str | None = None,
+        offset: int = 0,
+        limit: int = 50,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> ReviewItemsPage:
+        """Return one SQL-bounded page of the existing review queue."""
+
+        if offset < 0 or not 1 <= limit <= 200:
+            raise ValueError("Review queue offset or limit is outside the supported range.")
+        predicate, parameters = self._scope(principal)
+        filters = ["i.dataset_id = ?", predicate]
+        values: list[str | int] = [str(dataset_id), *parameters]
+        if state is not None:
+            filters.append("i.state = ?")
+            values.append(state.value)
+        if source_revision_id is not None:
+            filters.append("i.source_revision_id = ?")
+            values.append(str(source_revision_id))
+        if content_revision_id is not None:
+            filters.append("i.content_revision_id = ?")
+            values.append(str(content_revision_id))
+        if kind is not None:
+            filters.append("json_extract(i.document, '$.kind') = ?")
+            values.append(kind)
+        if code is not None:
+            filters.append("json_extract(i.document, '$.code') = ?")
+            values.append(code)
+        where = " AND ".join(filters)
+        with self._lock:
+            total_row = self._connection.execute(
+                "SELECT COUNT(*) AS total FROM data_tool_review_items AS i "
+                "JOIN datasets AS d ON d.id = i.dataset_id WHERE " + where,
+                values,
+            ).fetchone()
+            rows = self._connection.execute(
+                "SELECT i.document FROM data_tool_review_items AS i "
+                "JOIN datasets AS d ON d.id = i.dataset_id WHERE "
+                + where
+                + " ORDER BY i.created_at, i.id LIMIT ? OFFSET ?",
+                [*values, limit, offset],
+            ).fetchall()
+        return ReviewItemsPage(
+            items=[ReviewItem.model_validate_json(row["document"]) for row in rows],
+            total=int(total_row["total"]) if total_row is not None else 0,
+            offset=offset,
+            limit=limit,
+        )
+
     def list_review_items_for_worker(
         self,
         dataset_id: UUID,
@@ -1220,9 +1278,160 @@ class DataToolsStore:
                 self._connection.rollback()
                 raise
 
+    def finalize_training_content_revision_for_worker(
+        self,
+        revision: ContentRevision,
+        reports: list[SourceParseReport],
+        review_items: Iterable[ReviewItem],
+        principal: WorkspaceServicePrincipal | None = None,
+        *,
+        parent_revision_id: UUID | None = None,
+        resolved_records: dict[str, ReviewItemResolution] | None = None,
+        resolution_note: str | None = None,
+    ) -> ContentRevision:
+        """Atomically save an artifact-backed revision and streamed queue rows."""
+
+        if revision.state != ContentRevisionState.DRAFT:
+            raise ValueError("Training ContentRevisions must start in DRAFT.")
+        if revision.training_data_snapshot is None or not reports:
+            raise ValueError("Training revisions require a snapshot and source reports.")
+        source_ids = set(revision.source_revision_ids)
+        linked_reports: dict[UUID, SourceParseReport] = {}
+        for report in reports:
+            if (
+                report.dataset_id != revision.dataset_id
+                or report.source_revision_id not in source_ids
+                or report.status
+                not in {
+                    SourceParseReportState.SUCCEEDED,
+                    SourceParseReportState.WARNING,
+                    SourceParseReportState.FAILED,
+                }
+            ):
+                raise ValueError("Training reports must match terminal revision sources.")
+            if report.id in linked_reports:
+                raise ValueError("A training report may only be finalized once.")
+            linked_reports[report.id] = report.model_copy(
+                update={
+                    "content_revision_id": revision.id,
+                    "updated_at": max(report.updated_at, utc_now()),
+                }
+            )
+        expected = {
+            report_id: self._expected_review_item_count(report)
+            for report_id, report in linked_reports.items()
+        }
+        if any(report.review_item_count is None for report in linked_reports.values()):
+            raise ValueError("Training reports must declare their bounded Review Queue count.")
+
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                if principal is None:
+                    self._require_dataset_for_worker(revision.dataset_id)
+                else:
+                    self._require_dataset(revision.dataset_id, principal)
+                self._insert_content_revision_locked(revision)
+                saved_reports: dict[UUID, SourceParseReport] = {}
+                actual = {report_id: 0 for report_id in linked_reports}
+                for report in linked_reports.values():
+                    saved = self._save_source_parse_report_locked(
+                        report,
+                        principal,
+                        trusted_worker=principal is None,
+                    )
+                    saved_reports[saved.id] = saved
+                if resolved_records:
+                    if parent_revision_id is None:
+                        raise ValueError("Resolved training records require a parent revision.")
+                    parent = self._connection.execute(
+                        "SELECT dataset_id FROM data_tool_content_revisions WHERE id = ?",
+                        (str(parent_revision_id),),
+                    ).fetchone()
+                    if parent is None or parent["dataset_id"] != str(revision.dataset_id):
+                        raise ValueError("Training review parent must belong to this Dataset.")
+                    for start in range(0, len(resolved_records), 200):
+                        batch = list(resolved_records.items())[start : start + 200]
+                        placeholders = ",".join("?" for _ in batch)
+                        record_ids = [record_id for record_id, _ in batch]
+                        rows = self._connection.execute(
+                            "SELECT id,document FROM data_tool_review_items "
+                            "WHERE dataset_id = ? AND content_revision_id = ? AND state = ? "
+                            "AND json_extract(document, '$.recordId') IN (" + placeholders + ")",
+                            (
+                                str(revision.dataset_id),
+                                str(parent_revision_id),
+                                ReviewItemState.OPEN.value,
+                                *record_ids,
+                            ),
+                        ).fetchall()
+                        action_by_record = dict(batch)
+                        for row in rows:
+                            current = ReviewItem.model_validate_json(row["document"])
+                            action = action_by_record.get(current.record_id or "")
+                            if action is None or current.state != ReviewItemState.OPEN:
+                                continue
+                            desired = (
+                                ReviewItemState.REJECTED
+                                if action == ReviewItemResolution.REJECT
+                                else ReviewItemState.ACKNOWLEDGED
+                            )
+                            updated = current.model_copy(
+                                update={
+                                    "state": desired,
+                                    "note": resolution_note,
+                                    "resolved_at": utc_now(),
+                                    "resource_version": current.resource_version + 1,
+                                }
+                            )
+                            self._connection.execute(
+                                "UPDATE data_tool_review_items SET state=?,document=? WHERE id=?",
+                                (
+                                    desired.value,
+                                    updated.model_dump_json(by_alias=True, exclude_none=True),
+                                    row["id"],
+                                ),
+                            )
+                for item in review_items:
+                    saved_report = saved_reports.get(item.source_parse_report_id)
+                    if (
+                        saved_report is None
+                        or item.dataset_id != revision.dataset_id
+                        or item.content_revision_id != revision.id
+                        or item.source_revision_id != saved_report.source_revision_id
+                        or item.record_id is None
+                    ):
+                        raise ValueError(
+                            "Training ReviewItems must link to this revision and record."
+                        )
+                    actual[item.source_parse_report_id] += 1
+                    self._save_review_item_locked(
+                        item,
+                        principal,
+                        trusted_worker=principal is None,
+                    )
+                for report_id, report in saved_reports.items():
+                    count = actual[report_id]
+                    if count != expected[report_id]:
+                        raise ValueError(
+                            "Training report issue count does not match its ReviewItems."
+                        )
+                    if report.status == SourceParseReportState.SUCCEEDED and count:
+                        raise ValueError("Successful training reports cannot contain issues.")
+                    if report.status == SourceParseReportState.WARNING and count == 0:
+                        raise ValueError("Warning training reports must contain review items.")
+                self._connection.commit()
+                return revision
+            except Exception:
+                self._connection.rollback()
+                raise
+
     @staticmethod
     def _expected_review_item_count(report: SourceParseReport) -> int:
         """Count queue projections using the same rules as DataToolsService."""
+
+        if report.review_item_count is not None:
+            return report.review_item_count
 
         diagnostic_messages: set[str] = set()
         count = 0

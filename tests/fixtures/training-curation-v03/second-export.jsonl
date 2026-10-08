@@ -1,0 +1,3 @@
+{"sampleId": "duplicate-prompt", "sourceFamilyId": "another-export", "_reviewNote": "CURATION_OPERATOR_ONLY_DO_NOT_TRAIN", "prompt": "What should a staff member do after receiving a suspicious attachment?", "completion": "Do not open it. Report the message to the security team through the approved channel."}
+{"sampleId": "messages-02", "sourceFamilyId": "onboarding-copy", "_reviewNote": "CURATION_OPERATOR_ONLY_DO_NOT_TRAIN", "conversationId": "onboard-thread-01", "messages": [{"role": "user", "content": "账号开通后如何通知新人？"}, {"role": "assistant", "content": "服务台通过已验证的联系方式发送开通通知，不发送初始密码。"}]}
+{"sampleId": "short-answer", "sourceFamilyId": "support-macro", "_reviewNote": "CURATION_OPERATOR_ONLY_DO_NOT_TRAIN", "instruction": "Has the ticket been received?", "output": "Y"}

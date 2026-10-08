@@ -135,6 +135,94 @@
       },
       "additionalProperties": false
     },
+    "TrainingCurationCounts": {
+      "type": "object",
+      "required": ["total", "recognized", "formatErrors", "duplicateCandidates", "pendingReview", "excluded", "eligible"],
+      "properties": {
+        "total": {"type": "integer", "minimum": 0},
+        "recognized": {"type": "integer", "minimum": 0},
+        "formatErrors": {"type": "integer", "minimum": 0},
+        "duplicateCandidates": {"type": "integer", "minimum": 0},
+        "pendingReview": {"type": "integer", "minimum": 0},
+        "excluded": {"type": "integer", "minimum": 0},
+        "eligible": {"type": "integer", "minimum": 0}
+      },
+      "allOf": [
+        {
+          "description": "Disposition counters reconcile to the total; other counters are diagnostics and may overlap.",
+          "properties": {"total": {"type": "integer"}},
+          "x-cyrene-count-invariant": "total = pendingReview + excluded + eligible"
+        }
+      ],
+      "additionalProperties": false
+    },
+    "TrainingDataSnapshot": {
+      "type": "object",
+      "required": ["schemaVersion", "artifact", "recordCount", "counts"],
+      "properties": {
+        "schemaVersion": {"const": "cyrene.training-record.v1"},
+        "artifact": {"$ref": "#/$defs/ArtifactRef"},
+        "recordCount": {"type": "integer", "minimum": 0},
+        "counts": {"$ref": "#/$defs/TrainingCurationCounts"}
+      },
+      "additionalProperties": false
+    },
+    "TrainingRecordIssue": {
+      "type": "object",
+      "required": ["code", "message", "severity"],
+      "properties": {
+        "code": {"type": "string", "minLength": 1, "maxLength": 200},
+        "message": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "severity": {"type": "string", "enum": ["warning", "error"]}
+      },
+      "additionalProperties": false
+    },
+    "TrainingMessage": {
+      "type": "object",
+      "required": ["role", "content"],
+      "properties": {
+        "role": {"type": "string", "minLength": 1, "maxLength": 200},
+        "content": {}
+      },
+      "additionalProperties": true
+    },
+    "TrainingRecordEnvelope": {
+      "type": "object",
+      "required": ["schemaVersion", "id", "sampleId", "sourceRevisionId", "sourceFamilyId", "ordinal", "locator", "rawRecord", "rawLine", "detectedFormat", "normalized", "disposition", "issues", "contentDigest", "recipeDigest", "processingHistory", "policy"],
+      "properties": {
+        "schemaVersion": {"const": "cyrene.training-record.v1"},
+        "id": {"type": "string", "minLength": 1, "maxLength": 300},
+        "sampleId": {"type": "string", "minLength": 1, "maxLength": 500},
+        "sourceRevisionId": {"type": "string", "format": "uuid"},
+        "sourceFamilyId": {"type": "string", "minLength": 1, "maxLength": 300},
+        "conversationId": {"type": "string", "minLength": 1, "maxLength": 300},
+        "ordinal": {"type": "integer", "minimum": 0},
+        "locator": {"type": "object", "minProperties": 1, "additionalProperties": true},
+        "rawRecord": {},
+        "rawLine": {"type": ["string", "null"]},
+        "detectedFormat": {"type": "string", "enum": ["alpaca", "promptCompletion", "messages", "sharegpt", "chatml", "unknown"]},
+        "normalized": {"oneOf": [{"type": "null"}, {"type": "object", "properties": {"messages": {"type": "array", "items": {"$ref": "#/$defs/TrainingMessage"}}}, "required": ["messages"], "additionalProperties": false}]},
+        "disposition": {"type": "string", "enum": ["eligible", "review", "excluded"]},
+        "issues": {"type": "array", "items": {"$ref": "#/$defs/TrainingRecordIssue"}},
+        "contentDigest": {"$ref": "#/$defs/Sha256Digest"},
+        "recipeDigest": {"$ref": "#/$defs/Sha256Digest"},
+        "processingHistory": {"type": "array", "items": {"type": "object", "required": ["operation", "recipeDigest"], "properties": {"operation": {"type": "string", "minLength": 1}, "recipeDigest": {"$ref": "#/$defs/Sha256Digest"}, "beforeDigest": {"$ref": "#/$defs/Sha256Digest"}, "afterDigest": {"$ref": "#/$defs/Sha256Digest"}, "actor": {"type": "string"}, "at": {"type": "string", "format": "date-time"}}, "additionalProperties": true}},
+        "policy": {"type": "object", "properties": {"allowKnowledge": {"type": "boolean"}, "allowTraining": {"type": "boolean"}, "allowedPrincipalRefs": {"type": "array", "items": {"type": "string"}}, "allowedUsePurposes": {"type": "array", "items": {"type": "string"}}}, "additionalProperties": true}
+      },
+      "additionalProperties": false
+    },
+    "TrainingRecordsPage": {
+      "type": "object",
+      "required": ["revisionId", "offset", "limit", "total", "records"],
+      "properties": {
+        "revisionId": {"type": "string", "format": "uuid"},
+        "offset": {"type": "integer", "minimum": 0},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+        "total": {"type": "integer", "minimum": 0},
+        "records": {"type": "array", "items": {"$ref": "#/$defs/TrainingRecordEnvelope"}}
+      },
+      "additionalProperties": false
+    },
     "ContentRevision": {
       "type": "object",
       "required": [
@@ -151,6 +239,7 @@
         },
         "state": {"type": "string", "enum": ["DRAFT", "APPROVED", "REJECTED"]},
         "blocks": {"type": "array", "items": {"$ref": "#/$defs/ContentBlock"}},
+        "trainingDataSnapshot": {"$ref": "#/$defs/TrainingDataSnapshot"},
         "createdAt": {"type": "string", "format": "date-time"},
         "reviewedAt": {"type": "string", "format": "date-time"},
         "reviewNote": {"type": "string", "maxLength": 2000},
@@ -190,9 +279,36 @@
       },
       "additionalProperties": false
     },
+    "EditTrainingRecordRequest": {
+      "type": "object",
+      "required": ["recordId", "action"],
+      "properties": {
+        "recordId": {"type": "string", "minLength": 1, "maxLength": 300},
+        "action": {"type": "string", "enum": ["approve", "exclude", "remap"]},
+        "note": {"type": "string", "maxLength": 2000},
+        "format": {"type": "string", "enum": ["auto", "alpaca", "promptCompletion", "messages", "sharegpt", "chatml"]},
+        "fieldMapping": {"type": "object", "maxProperties": 100, "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 500}},
+        "roleMapping": {"type": "object", "maxProperties": 100, "additionalProperties": {"type": "string", "enum": ["system", "user", "assistant"]}},
+        "rawRecord": {"type": "object"}
+      },
+      "allOf": [
+        {"if": {"properties": {"action": {"const": "remap"}}, "required": ["action"]}, "then": {"anyOf": [{"required": ["format"]}, {"required": ["fieldMapping"]}, {"required": ["roleMapping"]}, {"required": ["rawRecord"]}]}}
+      ],
+      "additionalProperties": false
+    },
+    "EditTrainingRecordsRequest": {
+      "type": "object",
+      "required": ["resourceVersion", "edits"],
+      "properties": {
+        "resourceVersion": {"type": "integer", "minimum": 1},
+        "edits": {"type": "array", "minItems": 1, "maxItems": 200, "items": {"$ref": "#/$defs/EditTrainingRecordRequest"}},
+        "note": {"type": "string", "maxLength": 2000}
+      },
+      "additionalProperties": false
+    },
     "RunOperation": {
       "type": "string",
-      "enum": ["parse", "buildKnowledge", "prepareSft", "generateQa"]
+      "enum": ["parse", "curateTrainingData", "buildKnowledge", "prepareSft", "generateQa"]
     },
     "RunState": {
       "type": "string",
@@ -211,13 +327,15 @@
           "type": "object",
           "properties": {
             "sftMode": {"type": "string", "enum": ["instruction", "conversation"]},
+            "outputFormat": {"type": "string", "enum": ["sft", "messages", "promptCompletion"]},
             "split": {
               "type": "object",
               "required": ["train", "validation", "test"],
               "properties": {
                 "train": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
                 "validation": {"type": "number", "minimum": 0, "exclusiveMaximum": 1},
-                "test": {"type": "number", "minimum": 0, "exclusiveMaximum": 1}
+                "test": {"type": "number", "minimum": 0, "exclusiveMaximum": 1},
+                "seed": {"type": "integer", "minimum": 0}
               },
               "additionalProperties": false
             },
@@ -231,6 +349,28 @@
                 "maxOutputTokens": {"type": "integer", "minimum": 1}
               },
               "additionalProperties": false
+            },
+            "sourcePolicies": {
+              "type": "object",
+              "maxProperties": 20,
+              "propertyNames": {"format": "uuid"},
+              "additionalProperties": {"$ref": "#/$defs/ContentPolicy"},
+              "description": "Explicit per-source use grants. Missing entries remain denied for training; explicit prohibition cannot be overridden."
+            },
+            "curation": {
+              "type": "object",
+              "required": ["id", "version", "format"],
+              "properties": {
+                "id": {"type": "string", "minLength": 1, "maxLength": 200},
+                "version": {"type": "string", "minLength": 1, "maxLength": 100},
+                "format": {"type": "string", "enum": ["auto", "alpaca", "promptCompletion", "messages", "sharegpt", "chatml"]},
+                "fieldMapping": {"type": "object", "maxProperties": 100, "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 500}},
+                "roleMapping": {"type": "object", "maxProperties": 100, "additionalProperties": {"type": "string", "enum": ["system", "user", "assistant"]}},
+                "maxCharacters": {"type": "integer", "minimum": 1, "maximum": 10000000, "default": 100000},
+                "minCharacters": {"type": "integer", "minimum": 0, "maximum": 10000000, "default": 2},
+                "unicodeNormalization": {"type": "string", "enum": ["NFC", "NFD", "NFKC", "NFKD", "none"], "default": "NFC"}
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
@@ -240,6 +380,16 @@
         {
           "if": {"properties": {"operation": {"const": "parse"}}, "required": ["operation"]},
           "then": {"required": ["sourceRevisionIds"], "properties": {"sourceRevisionIds": {"minItems": 1}}}
+        },
+        {
+          "if": {"properties": {"operation": {"const": "curateTrainingData"}}, "required": ["operation"]},
+          "then": {
+            "required": ["sourceRevisionIds", "config"],
+            "properties": {
+              "sourceRevisionIds": {"minItems": 1},
+              "config": {"required": ["curation"]}
+            }
+          }
         },
         {
           "if": {"properties": {"operation": {"enum": ["buildKnowledge", "prepareSft", "generateQa"]}}, "required": ["operation"]},
@@ -364,6 +514,8 @@
         "warnings": {"type": "array", "items": {"$ref": "#/$defs/RunWarning"}},
         "diagnostics": {"type": "array", "items": {"$ref": "#/$defs/ParserDiagnostic"}},
         "unsupportedContent": {"type": "array", "items": {"$ref": "#/$defs/UnsupportedContent"}},
+        "reviewItemCount": {"type": "integer", "minimum": 0},
+        "diagnosticCounts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
         "failure": {"$ref": "#/$defs/RunFailure"},
         "outputArtifacts": {
           "type": "array",
@@ -416,7 +568,8 @@
         "sourceRevisionId": {"type": "string", "format": "uuid"},
         "processingRunId": {"type": "string", "format": "uuid"},
         "contentRevisionId": {"type": "string", "format": "uuid"},
-        "kind": {"type": "string", "enum": ["PARSER_WARNING", "OCR_WARNING", "PARSE_FAILURE", "UNSUPPORTED_SOURCE"]},
+        "recordId": {"type": "string", "minLength": 1, "maxLength": 500},
+        "kind": {"type": "string", "enum": ["PARSER_WARNING", "OCR_WARNING", "PARSE_FAILURE", "UNSUPPORTED_SOURCE", "TRAINING_STRUCTURE", "TRAINING_DUPLICATE", "TRAINING_QUALITY", "TRAINING_UNSUPPORTED", "TRAINING_LEAKAGE"]},
         "code": {"type": "string", "minLength": 1, "maxLength": 200},
         "message": {"type": "string"},
         "severity": {"type": "string", "minLength": 1, "maxLength": 40},
@@ -454,7 +607,10 @@
       "required": ["items", "generatedDrafts"],
       "properties": {
         "items": {"type": "array", "items": {"$ref": "#/$defs/ReviewItem"}},
-        "generatedDrafts": {"type": "array", "items": {"$ref": "#/$defs/GeneratedDraftSummary"}}
+        "generatedDrafts": {"type": "array", "items": {"$ref": "#/$defs/GeneratedDraftSummary"}},
+        "offset": {"type": "integer", "minimum": 0},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+        "total": {"type": "integer", "minimum": 0}
       },
       "additionalProperties": false
     },
@@ -503,7 +659,7 @@
     },
     "PublishDataToolsVersionRequest": {
       "type": "object",
-      "required": ["contentRevisionId", "knowledgeRunId", "sftRunId"],
+      "required": ["contentRevisionId", "sftRunId"],
       "properties": {
         "contentRevisionId": {"type": "string", "format": "uuid"},
         "knowledgeRunId": {"type": "string", "format": "uuid"},
@@ -514,8 +670,7 @@
     "DatasetVersionDataTools": {
       "type": "object",
       "required": [
-        "contentRevisionId", "sourceRevisionIds", "knowledgeProfile", "knowledgeArtifact",
-        "sftProfile", "sftArtifact", "stale"
+        "contentRevisionId", "sourceRevisionIds", "sftProfile", "sftArtifact", "stale"
       ],
       "properties": {
         "contentRevisionId": {"type": "string", "format": "uuid"},

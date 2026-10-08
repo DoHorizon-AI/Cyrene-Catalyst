@@ -26,6 +26,7 @@ class ProcessingOperation(StrEnum):
     """Operations accepted by the Data Tools workflow. | Data Tools 工作流操作。"""
 
     PARSE = "parse"
+    CURATE_TRAINING_DATA = "curateTrainingData"
     BUILD_KNOWLEDGE = "buildKnowledge"
     PREPARE_SFT = "prepareSft"
     GENERATE_QA = "generateQa"
@@ -168,6 +169,11 @@ class ReviewItemKind(StrEnum):
     OCR_WARNING = "OCR_WARNING"
     PARSE_FAILURE = "PARSE_FAILURE"
     UNSUPPORTED_SOURCE = "UNSUPPORTED_SOURCE"
+    TRAINING_STRUCTURE = "TRAINING_STRUCTURE"
+    TRAINING_DUPLICATE = "TRAINING_DUPLICATE"
+    TRAINING_QUALITY = "TRAINING_QUALITY"
+    TRAINING_UNSUPPORTED = "TRAINING_UNSUPPORTED"
+    TRAINING_LEAKAGE = "TRAINING_LEAKAGE"
 
 
 class ReviewItemState(StrEnum):
@@ -198,6 +204,8 @@ class SourceParseReport(ContractModel):
     warnings: list[ProcessingWarning] = Field(default_factory=list)
     diagnostics: list[dict[str, Any]] = Field(default_factory=list)
     unsupported_content: list[dict[str, Any]] = Field(default_factory=list)
+    review_item_count: int | None = Field(default=None, ge=0)
+    diagnostic_counts: dict[str, int] = Field(default_factory=dict)
     failure: ProcessingFailure | None = None
     output_artifacts: list[ArtifactRef] = Field(default_factory=list)
     started_at: datetime | None = None
@@ -215,16 +223,19 @@ class SourceParseReport(ContractModel):
         if self.content_revision_id is not None and self.status not in {
             SourceParseReportState.SUCCEEDED,
             SourceParseReportState.WARNING,
+            SourceParseReportState.FAILED,
         }:
-            raise ValueError(
-                "Only successful or warning SourceParseReports can link a ContentRevision."
-            )
-        if self.status in {
+            raise ValueError("Only terminal source reports can link a ContentRevision.")
+        needs_snapshot_artifact = self.content_revision_id is not None or self.status in {
             SourceParseReportState.SUCCEEDED,
             SourceParseReportState.WARNING,
-        } and not any(artifact.kind == "source-parse-blocks" for artifact in self.output_artifacts):
+        }
+        if needs_snapshot_artifact and not any(
+            artifact.kind == "source-parse-blocks" for artifact in self.output_artifacts
+        ):
             raise ValueError(
-                "Successful SourceParseReports must retain a source-parse-blocks artifact."
+                "Linked or successful SourceParseReports must retain a "
+                "source-parse-blocks artifact."
             )
         return self
 
@@ -244,6 +255,7 @@ class ReviewItem(ContractModel):
     severity: str = Field(min_length=1, max_length=40)
     locator: ContentLocator | None = None
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    record_id: str | None = Field(default=None, min_length=1, max_length=500)
     state: ReviewItemState = ReviewItemState.OPEN
     note: str | None = Field(default=None, max_length=2000)
     created_at: datetime = Field(default_factory=utc_now)
@@ -313,6 +325,48 @@ class ContentBlock(ContractModel):
     policy: ContentPolicy = Field(default_factory=ContentPolicy)
 
 
+class TrainingCurationCounts(ContractModel):
+    """Reconciled record dispositions and overlapping diagnostics. | 训练整理计数。"""
+
+    total: int = Field(ge=0)
+    recognized: int = Field(ge=0)
+    format_errors: int = Field(default=0, ge=0)
+    duplicate_candidates: int = Field(default=0, ge=0)
+    pending_review: int = Field(default=0, ge=0)
+    excluded: int = Field(default=0, ge=0)
+    eligible: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_dispositions(self) -> TrainingCurationCounts:
+        """Require record dispositions to account for every source row."""
+
+        if self.eligible + self.pending_review + self.excluded != self.total:
+            raise ValueError("Training record dispositions must sum to total.")
+        if any(
+            value > self.total
+            for value in (self.recognized, self.format_errors, self.duplicate_candidates)
+        ):
+            raise ValueError("Diagnostic counters cannot exceed total records.")
+        return self
+
+
+class TrainingDataSnapshot(ContractModel):
+    """Immutable artifact-backed normalized records for a ContentRevision."""
+
+    schema_version: Literal["cyrene.training-record.v1"]
+    artifact: ArtifactRef
+    record_count: int = Field(ge=0)
+    counts: TrainingCurationCounts
+
+    @model_validator(mode="after")
+    def validate_record_count(self) -> TrainingDataSnapshot:
+        """Keep the immutable record count equal to its disposition ledger."""
+
+        if self.record_count != self.counts.total:
+            raise ValueError("Training snapshot recordCount must equal counts.total.")
+        return self
+
+
 class ContentRevision(ContractModel):
     """Immutable block snapshot and its mutable review projection. | 不可变内容快照与审核投影。"""
 
@@ -322,11 +376,31 @@ class ContentRevision(ContractModel):
     parent_revision_id: UUID | None = None
     source_revision_ids: list[UUID] = Field(default_factory=list)
     blocks: list[ContentBlock] = Field(default_factory=list)
+    training_data_snapshot: TrainingDataSnapshot | None = None
     state: ContentRevisionState = ContentRevisionState.DRAFT
     reviewed_at: datetime | None = None
     review_note: str | None = Field(default=None, max_length=2000)
     created_at: datetime = Field(default_factory=utc_now)
     resource_version: int = Field(default=1, ge=1)
+
+
+class TrainingRecordsPage(ContractModel):
+    """One bounded page of raw and normalized training records."""
+
+    revision_id: UUID
+    offset: int = Field(ge=0)
+    limit: int = Field(ge=1, le=200)
+    total: int = Field(ge=0)
+    records: list[dict[str, Any]]
+
+
+class ReviewItemsPage(ContractModel):
+    """One bounded page from the existing Review Queue."""
+
+    items: list[ReviewItem]
+    total: int = Field(ge=0)
+    offset: int = Field(ge=0)
+    limit: int = Field(ge=1, le=200)
 
 
 class Annotation(ContractModel):

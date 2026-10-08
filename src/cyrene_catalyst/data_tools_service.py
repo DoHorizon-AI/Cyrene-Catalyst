@@ -14,6 +14,8 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import sqlite3
 import zipfile
 from datetime import date, datetime
 from enum import Enum
@@ -37,14 +39,19 @@ from cyrene_catalyst.data_tools_domain import (
     ProcessingRun,
     ProcessingRunState,
     ProcessingStage,
+    ProcessingStageState,
     ProcessingWarning,
     ReviewItem,
     ReviewItemKind,
     ReviewItemResolution,
+    ReviewItemsPage,
     ReviewItemState,
     SourceParseReport,
     SourceParseReportState,
     SourceRevision,
+    TrainingCurationCounts,
+    TrainingDataSnapshot,
+    TrainingRecordsPage,
     recipe_digest_for,
 )
 from cyrene_catalyst.data_tools_store import DataToolsStore
@@ -67,12 +74,14 @@ from cyrene_catalyst.workspace_auth import WorkspaceServicePrincipal
 DOCUMENT_PARSING_CONNECTION_ENV = "CYRENE_DOCUMENT_PARSING_CONNECTION_REF"
 KNOWLEDGE_PREPARATION_CONNECTION_ENV = "CYRENE_KNOWLEDGE_PREPARATION_CONNECTION_REF"
 DATASET_GENERATION_CONNECTION_ENV = "CYRENE_DATASET_GENERATION_CONNECTION_REF"
+DATASET_PREPARATION_CONNECTION_ENV = "CYRENE_DATASET_PREPARATION_CONNECTION_REF"
 MAX_SOURCE_BYTES = 32 * 1024 * 1024
 MAX_BATCH_SOURCES = 20
 MAX_BATCH_SOURCE_BYTES = 128 * 1024 * 1024
 MAX_BATCH_REQUEST_BYTES = 129 * 1024 * 1024
 MAX_RESULT_BYTES = 256 * 1024 * 1024
 MAX_ZIP_ENTRY_BYTES = 128 * 1024 * 1024
+MAX_TRAINING_ROW_BYTES = 16 * 1024 * 1024
 _PARSER_CAPABILITY = "document.parsing.v1"
 _KNOWLEDGE_CAPABILITY = "dataset.knowledge.v1"
 _GENERATION_CAPABILITY = "dataset.generation.v1"
@@ -225,7 +234,9 @@ def _binding_environment(operation: ProcessingOperation, source: SourceRevision 
     if operation == ProcessingOperation.PARSE:
         if source is not None and source.media_type in _DOCUMENT_PARSER_MEDIA_TYPES:
             return DOCUMENT_PARSING_CONNECTION_ENV
-        return "CYRENE_DATASET_PREPARATION_CONNECTION_REF"
+        return DATASET_PREPARATION_CONNECTION_ENV
+    if operation == ProcessingOperation.CURATE_TRAINING_DATA:
+        return DATASET_PREPARATION_CONNECTION_ENV
     if operation == ProcessingOperation.BUILD_KNOWLEDGE:
         return KNOWLEDGE_PREPARATION_CONNECTION_ENV
     return DATASET_GENERATION_CONNECTION_ENV
@@ -496,6 +507,1222 @@ class DataToolsService:
             principal=principal,
         )
 
+    def list_review_items_page(
+        self,
+        dataset_id: UUID,
+        *,
+        state: ReviewItemState | None = None,
+        source_revision_id: UUID | None = None,
+        content_revision_id: UUID | None = None,
+        kind: str | None = None,
+        code: str | None = None,
+        offset: int = 0,
+        limit: int = 50,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> ReviewItemsPage:
+        """Return a SQL-paged Review Queue filtered by existing issue fields."""
+
+        self.require_dataset(dataset_id, principal)
+        try:
+            return self.store.list_review_items_page(
+                dataset_id,
+                state=state,
+                source_revision_id=source_revision_id,
+                content_revision_id=content_revision_id,
+                kind=kind,
+                code=code,
+                offset=offset,
+                limit=limit,
+                principal=principal,
+            )
+        except ValueError as exc:
+            raise _error(
+                "CATALYST_REVIEW_QUEUE_PAGE_INVALID",
+                "Review Queue page is invalid",
+                str(exc),
+                422,
+            ) from exc
+
+    def list_training_records(
+        self,
+        dataset_id: UUID,
+        revision_id: UUID,
+        offset: int = 0,
+        limit: int = 50,
+        disposition: str | None = None,
+        issue_code: str | None = None,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> TrainingRecordsPage:
+        """Stream a bounded raw-versus-normalized record page from an immutable snapshot."""
+
+        self.require_dataset(dataset_id, principal)
+        if offset < 0 or not 1 <= limit <= 200:
+            raise _error(
+                "CATALYST_TRAINING_RECORD_PAGE_INVALID",
+                "Training record page is invalid",
+                "offset must be non-negative and limit must be between 1 and 200.",
+                422,
+            )
+        revision = self.get_content_revision(revision_id, principal)
+        if revision.dataset_id != dataset_id or revision.training_data_snapshot is None:
+            raise _error(
+                "CATALYST_TRAINING_SNAPSHOT_NOT_FOUND",
+                "Training snapshot not found",
+                "The ContentRevision has no artifact-backed training records.",
+                404,
+            )
+        artifact_path = self.artifacts.resolve(revision.training_data_snapshot.artifact)
+        if artifact_path.stat().st_size > MAX_RESULT_BYTES:
+            raise _error(
+                "CATALYST_TRAINING_SNAPSHOT_TOO_LARGE",
+                "Training snapshot exceeds supported size",
+                "The saved training record artifact exceeds Catalyst's read limit.",
+                413,
+            )
+        matches: list[dict[str, Any]] = []
+        total = 0
+        try:
+            for envelope in self._iter_training_record_envelopes(artifact_path):
+                if disposition is not None and envelope.get("disposition") != disposition:
+                    continue
+                issues = envelope.get("issues", [])
+                if issue_code is not None and not any(
+                    isinstance(issue, dict) and issue.get("code") == issue_code for issue in issues
+                ):
+                    continue
+                if offset <= total < offset + limit:
+                    matches.append(envelope)
+                total += 1
+        except (OSError, ValueError) as exc:
+            raise _error(
+                "CATALYST_TRAINING_SNAPSHOT_INVALID",
+                "Training snapshot cannot be read",
+                "The immutable training record artifact failed its JSONL checks.",
+                500,
+            ) from exc
+        return TrainingRecordsPage(
+            revision_id=revision.id,
+            offset=offset,
+            limit=limit,
+            total=total,
+            records=matches,
+        )
+
+    def edit_training_records(
+        self,
+        *,
+        dataset_id: UUID,
+        revision_id: UUID,
+        resource_version: int,
+        edits: list[dict[str, Any]],
+        note: str | None = None,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> ContentRevision:
+        """Create an immutable child revision from bounded human record decisions."""
+
+        self.require_dataset(dataset_id, principal)
+        current = self.get_content_revision(revision_id, principal)
+        if current.dataset_id != dataset_id or current.training_data_snapshot is None:
+            raise _error(
+                "CATALYST_TRAINING_SNAPSHOT_NOT_FOUND",
+                "Training snapshot not found",
+                "The ContentRevision has no artifact-backed training records.",
+                404,
+            )
+        if current.state != ContentRevisionState.DRAFT:
+            raise _error(
+                "CATALYST_CONTENT_REVISION_NOT_EDITABLE",
+                "ContentRevision cannot be edited",
+                "Create a new curation revision before editing an approved or rejected snapshot.",
+                409,
+            )
+        revisions = self.store.list_content_revisions(dataset_id, principal)
+        if not revisions or revisions[0].id != current.id:
+            raise _error(
+                "CATALYST_CONTENT_REVISION_CONFLICT",
+                "Content changed",
+                "Reload the latest ContentRevision before editing records.",
+                409,
+                retryable=True,
+            )
+        if current.resource_version != resource_version:
+            raise _error(
+                "CATALYST_CONTENT_REVISION_CONFLICT",
+                "Content changed",
+                "The expected ContentRevision version is stale.",
+                409,
+                retryable=True,
+            )
+        if not edits or len(edits) > 200:
+            raise _error(
+                "CATALYST_TRAINING_EDIT_BATCH_INVALID",
+                "Training edit batch is invalid",
+                "Provide between one and 200 record decisions.",
+                422,
+            )
+        edit_by_id: dict[str, dict[str, Any]] = {}
+        allowed_keys = {
+            "recordId",
+            "action",
+            "note",
+            "format",
+            "fieldMapping",
+            "roleMapping",
+            "rawRecord",
+        }
+        for edit in edits:
+            if not isinstance(edit, dict) or set(edit) - allowed_keys:
+                raise _error(
+                    "CATALYST_TRAINING_EDIT_INVALID",
+                    "Training edit is invalid",
+                    "Each edit contains unsupported fields.",
+                    422,
+                )
+            record_id = edit.get("recordId")
+            action = edit.get("action")
+            if (
+                not isinstance(record_id, str)
+                or not record_id
+                or action
+                not in {
+                    "approve",
+                    "exclude",
+                    "remap",
+                }
+            ):
+                raise _error(
+                    "CATALYST_TRAINING_EDIT_INVALID",
+                    "Training edit is invalid",
+                    "Each edit needs a recordId and supported action.",
+                    422,
+                )
+            if record_id in edit_by_id:
+                raise _error(
+                    "CATALYST_TRAINING_EDIT_INVALID",
+                    "Training edit is invalid",
+                    "A record may only be edited once in one batch.",
+                    422,
+                )
+            if action == "remap" and not any(
+                key in edit for key in ("format", "fieldMapping", "roleMapping", "rawRecord")
+            ):
+                raise _error(
+                    "CATALYST_TRAINING_EDIT_INVALID",
+                    "Training edit is invalid",
+                    (
+                        "A remap edit requires a format, field mapping, role mapping, "
+                        "or corrected rawRecord."
+                    ),
+                    422,
+                )
+            edit_by_id[record_id] = edit
+
+        source_path = self.artifacts.resolve(current.training_data_snapshot.artifact)
+        output_path = self.artifacts.stage_path(f"{uuid4()}.training-records-edited.jsonl")
+        recipe, recipe_digest = self._curation_recipe_for_revision(current, principal)
+        found: set[str] = set()
+        try:
+            with output_path.open("wb") as output:
+                for envelope in self._iter_training_record_envelopes(source_path):
+                    record_id = envelope.get("id")
+                    if not isinstance(record_id, str):
+                        raise _error(
+                            "CATALYST_TRAINING_SNAPSHOT_INVALID",
+                            "Training snapshot is invalid",
+                            "A record envelope has no stable id.",
+                            500,
+                        )
+                    record_edit = edit_by_id.get(record_id)
+                    if record_edit is not None:
+                        found.add(record_id)
+                        envelope = self._apply_training_record_edit(
+                            envelope,
+                            record_edit,
+                            recipe=recipe,
+                            recipe_digest=recipe_digest,
+                            note=note,
+                        )
+                    output.write(_canonical_json(envelope))
+                    output.write(b"\n")
+            missing = set(edit_by_id) - found
+            if missing:
+                raise _error(
+                    "CATALYST_TRAINING_RECORD_NOT_FOUND",
+                    "Training record not found",
+                    "At least one recordId is not part of this immutable snapshot.",
+                    404,
+                )
+            if output_path.stat().st_size > MAX_RESULT_BYTES:
+                raise _error(
+                    "CATALYST_TRAINING_SNAPSHOT_TOO_LARGE",
+                    "Training snapshot exceeds supported size",
+                    "The edited training record artifact exceeds Catalyst's write limit.",
+                    413,
+                )
+            snapshot_ref = self.artifacts.publish(output_path, "source-parse-blocks")
+            counts, per_source = self._count_training_records(output_path)
+            child = ContentRevision(
+                id=uuid4(),
+                dataset_id=dataset_id,
+                revision=current.revision + 1,
+                parent_revision_id=current.id,
+                source_revision_ids=list(current.source_revision_ids),
+                training_data_snapshot=TrainingDataSnapshot(
+                    schema_version="cyrene.training-record.v1",
+                    artifact=snapshot_ref,
+                    record_count=counts.total,
+                    counts=counts,
+                ),
+                state=ContentRevisionState.DRAFT,
+                created_at=utc_now(),
+                resource_version=1,
+            )
+            now = utc_now()
+            edit_digests = [
+                {
+                    "recordId": record_id,
+                    "action": value["action"],
+                    "digest": _digest_bytes(_canonical_json(value)),
+                }
+                for record_id, value in sorted(edit_by_id.items())
+            ]
+            run_recipe = {
+                "operation": ProcessingOperation.CURATE_TRAINING_DATA.value,
+                "config": {
+                    "humanEdits": edit_digests,
+                    "parentContentRevisionId": str(current.id),
+                    "curation": recipe,
+                    "curationRecipeDigest": recipe_digest,
+                },
+                "sourceRevisionIds": [str(value) for value in current.source_revision_ids],
+                "contentRevisionId": str(current.id),
+            }
+            processing_run = ProcessingRun(
+                id=uuid4(),
+                dataset_id=dataset_id,
+                operation=ProcessingOperation.CURATE_TRAINING_DATA,
+                state=ProcessingRunState.RUNNING,
+                source_revision_ids=list(current.source_revision_ids),
+                content_revision_id=current.id,
+                recipe_version="data-tools-v1",
+                recipe=run_recipe,
+                recipe_digest=recipe_digest_for("data-tools-v1", run_recipe),
+                stages=[
+                    ProcessingStage(
+                        key="humanRecordReview",
+                        filename="training-records.jsonl",
+                        state=ProcessingStageState.RUNNING,
+                        deterministic=False,
+                        input_digest=current.training_data_snapshot.artifact.digest,
+                        recipe_digest=recipe_digest_for("data-tools-v1", run_recipe),
+                        started_at=now,
+                    )
+                ],
+                progress=ProcessingProgress(completed=0, total=1),
+                created_at=now,
+                updated_at=now,
+                started_at=now,
+                resource_version=1,
+            )
+            self.store.create_run(processing_run, principal)
+
+            reports: list[SourceParseReport] = []
+            for source_id, source_summary in per_source.items():
+                report_item_count = source_summary["reviewItems"]
+                report = SourceParseReport(
+                    id=uuid5(_REVIEW_NAMESPACE, f"human-review:{processing_run.id}:{source_id}"),
+                    dataset_id=dataset_id,
+                    source_revision_id=source_id,
+                    processing_run_id=processing_run.id,
+                    content_revision_id=child.id,
+                    status=(
+                        SourceParseReportState.WARNING
+                        if report_item_count
+                        else SourceParseReportState.SUCCEEDED
+                    ),
+                    block_count=source_summary["total"],
+                    review_item_count=report_item_count,
+                    diagnostic_counts=source_summary["diagnosticCounts"],
+                    output_artifacts=[snapshot_ref],
+                    started_at=now,
+                    finished_at=utc_now(),
+                    created_at=now,
+                    updated_at=utc_now(),
+                )
+                reports.append(report)
+
+            def create_review_items() -> Any:
+                report_by_source = {report.source_revision_id: report for report in reports}
+                for envelope in self._iter_training_record_envelopes(output_path):
+                    if envelope.get("disposition") != "review":
+                        continue
+                    source_id = UUID(str(envelope["sourceRevisionId"]))
+                    report = report_by_source[source_id]
+                    record_id = str(envelope["id"])
+                    issues = envelope.get("issues", [])
+                    if not issues:
+                        issues = [
+                            {
+                                "code": "HUMAN_REVIEW_REQUIRED",
+                                "message": (
+                                    "This remapped record needs explicit approval or exclusion."
+                                ),
+                                "severity": "warning",
+                            }
+                        ]
+                    for index, issue in enumerate(issues):
+                        yield ReviewItem(
+                            id=uuid5(
+                                _REVIEW_NAMESPACE,
+                                f"{processing_run.id}:{record_id}:{issue['code']}:{index}",
+                            ),
+                            dataset_id=dataset_id,
+                            source_parse_report_id=report.id,
+                            source_revision_id=source_id,
+                            processing_run_id=processing_run.id,
+                            content_revision_id=child.id,
+                            kind=self._training_review_kind(str(issue["code"])),
+                            code=str(issue["code"]),
+                            message=str(issue["message"])[:2000],
+                            severity=str(issue.get("severity", "warning")),
+                            locator=self._training_record_locator(envelope.get("locator")),
+                            record_id=record_id,
+                        )
+
+            try:
+                self.store.finalize_training_content_revision_for_worker(
+                    child,
+                    reports,
+                    create_review_items(),
+                    principal=principal,
+                    parent_revision_id=current.id,
+                    resolved_records={
+                        record_id: (
+                            ReviewItemResolution.REJECT
+                            if edit["action"] == "exclude"
+                            else ReviewItemResolution.ACKNOWLEDGE
+                        )
+                        for record_id, edit in edit_by_id.items()
+                    },
+                    resolution_note=note,
+                )
+                completed_at = utc_now()
+                completed_run = processing_run.model_copy(
+                    update={
+                        "state": ProcessingRunState.SUCCEEDED,
+                        "stages": [
+                            processing_run.stages[0].model_copy(
+                                update={
+                                    "state": ProcessingStageState.COMPLETED,
+                                    "output": {
+                                        "contentRevisionId": str(child.id),
+                                        "artifact": snapshot_ref.model_dump(
+                                            by_alias=True,
+                                            exclude_none=True,
+                                        ),
+                                        "recordCount": counts.total,
+                                    },
+                                    "finished_at": completed_at,
+                                }
+                            )
+                        ],
+                        "progress": ProcessingProgress(completed=1, total=1),
+                        "output_artifacts": [snapshot_ref],
+                        "updated_at": completed_at,
+                        "finished_at": completed_at,
+                        "resource_version": 2,
+                    }
+                )
+                self.store.save_run(completed_run, principal)
+            except (LookupError, ValueError) as exc:
+                failure_at = utc_now()
+                failed_run = processing_run.model_copy(
+                    update={
+                        "state": ProcessingRunState.FAILED,
+                        "stages": [
+                            processing_run.stages[0].model_copy(
+                                update={
+                                    "state": ProcessingStageState.FAILED,
+                                    "failure_code": "CATALYST_TRAINING_EDIT_FAILED",
+                                    "failure_message": (
+                                        "The edited snapshot could not be finalized."
+                                    ),
+                                    "retryable": False,
+                                    "finished_at": failure_at,
+                                }
+                            )
+                        ],
+                        "failure": ProcessingFailure(
+                            code="CATALYST_TRAINING_EDIT_FAILED",
+                            message="The edited snapshot could not be finalized.",
+                            retryable=False,
+                        ),
+                        "updated_at": failure_at,
+                        "finished_at": failure_at,
+                        "resource_version": 2,
+                    }
+                )
+                self.store.save_run(failed_run, principal)
+                raise _error(
+                    "CATALYST_TRAINING_EDIT_FAILED",
+                    "Training records could not be updated",
+                    "The record decisions could not be saved as a new immutable revision.",
+                    409,
+                ) from exc
+            return child
+        except CatalystError:
+            raise
+        except StageExecutionFailure as exc:
+            raise _error(exc.code, "Training record edit failed", str(exc), 422) from exc
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            raise _error(
+                "CATALYST_TRAINING_EDIT_FAILED",
+                "Training record edit failed",
+                "The immutable training snapshot could not be rewritten safely.",
+                422,
+            ) from exc
+        finally:
+            output_path.unlink(missing_ok=True)
+
+    def _curation_recipe_for_revision(
+        self,
+        revision: ContentRevision,
+        principal: WorkspaceServicePrincipal | None,
+    ) -> tuple[dict[str, Any], str]:
+        """Find the persisted curation recipe that created this snapshot."""
+
+        reports = self.store.list_source_parse_reports(revision.dataset_id, principal=principal)
+        for report in reports:
+            if report.content_revision_id != revision.id:
+                continue
+            run = self.store.get_run(report.processing_run_id, principal)
+            if run is None or run.operation != ProcessingOperation.CURATE_TRAINING_DATA:
+                continue
+            config = run.recipe.get("config", {})
+            recipe = config.get("curation") if isinstance(config, dict) else None
+            if isinstance(recipe, dict):
+                curation_digest = config.get("curationRecipeDigest")
+                if not isinstance(curation_digest, str):
+                    curation_digest = run.recipe_digest or recipe_digest_for(
+                        run.recipe_version, run.recipe
+                    )
+                return recipe, curation_digest
+        return (
+            {
+                "id": "training-curation-v1",
+                "version": "1",
+                "format": "auto",
+                "fieldMapping": {},
+                "roleMapping": {},
+                "maxCharacters": 100_000,
+                "minCharacters": 2,
+                "unicodeNormalization": "NFC",
+            },
+            revision.training_data_snapshot.artifact.digest
+            if revision.training_data_snapshot is not None
+            else "sha256:" + "0" * 64,
+        )
+
+    def _apply_training_record_edit(
+        self,
+        envelope: dict[str, Any],
+        edit: dict[str, Any],
+        *,
+        recipe: dict[str, Any],
+        recipe_digest: str,
+        note: str | None,
+    ) -> dict[str, Any]:
+        """Apply one approve, exclude, or Plugin-owned remap decision."""
+
+        action = str(edit["action"])
+        edit_note = edit.get("note") or note
+        if action == "approve":
+            if envelope.get("disposition") == "excluded":
+                raise _error(
+                    "CATALYST_TRAINING_RECORD_APPROVAL_INVALID",
+                    "Training record cannot be approved",
+                    "An excluded record must be remapped before it can enter training.",
+                    409,
+                )
+            if not isinstance(envelope.get("normalized"), dict):
+                raise _error(
+                    "CATALYST_TRAINING_RECORD_APPROVAL_INVALID",
+                    "Training record cannot be approved",
+                    "A record without a normalized representation must be remapped or excluded.",
+                    409,
+                )
+            if not self._training_policy_allows(
+                envelope.get("policy")
+            ) or self._training_record_explicitly_denied(envelope.get("rawRecord")):
+                raise _error(
+                    "CATALYST_TRAINING_POLICY_VIOLATION",
+                    "Training record is not permitted",
+                    "Human approval cannot grant training use when policy denies it.",
+                    403,
+                )
+            if any(
+                isinstance(issue, dict)
+                and (
+                    issue.get("severity") == "error"
+                    or self._training_issue_requires_exclusion(issue)
+                )
+                for issue in envelope.get("issues", [])
+            ):
+                raise _error(
+                    "CATALYST_TRAINING_RECORD_APPROVAL_INVALID",
+                    "Training record requires correction",
+                    "Resolve error-level or unrepresentable issues by remapping or "
+                    "excluding this record.",
+                    409,
+                )
+            envelope["disposition"] = "eligible"
+        elif action == "exclude":
+            envelope["disposition"] = "excluded"
+        else:
+            previous_issues = envelope.get("issues", [])
+            duplicate_blockers = [
+                issue
+                for issue in previous_issues
+                if isinstance(issue, dict) and "DUPLICATE" in str(issue.get("code", "")).upper()
+            ]
+            response = self._invoke_plugin(
+                capability="dataset.preparation.v1",
+                environment_name=DATASET_PREPARATION_CONNECTION_ENV,
+                method="remap_training_record",
+                request={
+                    "record": envelope,
+                    "recipe": recipe,
+                    "recipe_digest": recipe_digest,
+                    **({"format": edit["format"]} if edit.get("format") is not None else {}),
+                    **(
+                        {"field_mapping": edit["fieldMapping"]}
+                        if edit.get("fieldMapping") is not None
+                        else {}
+                    ),
+                    **(
+                        {"role_mapping": edit["roleMapping"]}
+                        if edit.get("roleMapping") is not None
+                        else {}
+                    ),
+                    **(
+                        {"raw_record": edit["rawRecord"]}
+                        if edit.get("rawRecord") is not None
+                        else {}
+                    ),
+                    **({"note": edit_note} if edit_note else {}),
+                },
+                cancel_event=Event(),
+            )
+            if (
+                response.get("id") != envelope.get("id")
+                or response.get("schemaVersion") != "cyrene.training-record.v1"
+                or not isinstance(response.get("issues"), list)
+            ):
+                raise StageExecutionFailure(
+                    "CATALYST_PLUGIN_OUTPUT_INVALID",
+                    "The remap Plugin changed immutable record identity or lineage.",
+                    retryable=False,
+                    outcome_unknown=False,
+                )
+            immutable_fields = (
+                "sourceRevisionId",
+                "sourceFamilyId",
+                "sampleId",
+                "conversationId",
+                "ordinal",
+                "locator",
+                "policy",
+                "recipeDigest",
+            )
+            if any(response.get(field) != envelope.get(field) for field in immutable_fields):
+                raise StageExecutionFailure(
+                    "CATALYST_PLUGIN_OUTPUT_INVALID",
+                    "The remap Plugin changed immutable record lineage, policy, or "
+                    "recipe identity.",
+                    retryable=False,
+                    outcome_unknown=False,
+                )
+            if edit.get("rawRecord") is None and response.get("rawRecord") != envelope.get(
+                "rawRecord"
+            ):
+                raise StageExecutionFailure(
+                    "CATALYST_PLUGIN_OUTPUT_INVALID",
+                    "The remap Plugin changed raw content without an explicit correction.",
+                    retryable=False,
+                    outcome_unknown=False,
+                )
+            prior_history = envelope.get("processingHistory")
+            updated_history = response.get("processingHistory")
+            if (
+                not isinstance(prior_history, list)
+                or not isinstance(updated_history, list)
+                or updated_history[: len(prior_history)] != prior_history
+                or not any(
+                    isinstance(entry, dict) and entry.get("operation") == "humanRemap"
+                    for entry in updated_history[len(prior_history) :]
+                )
+            ):
+                raise StageExecutionFailure(
+                    "CATALYST_PLUGIN_OUTPUT_INVALID",
+                    "The remap Plugin did not preserve history and append its human correction.",
+                    retryable=False,
+                    outcome_unknown=False,
+                )
+            envelope = response
+            if duplicate_blockers:
+                # A one-record remap cannot re-run batch deduplication. Keep the prior
+                # blocker visible until a batch curation run recomputes duplicate state.
+                current_issues = envelope.get("issues", [])
+                if not isinstance(current_issues, list):
+                    current_issues = []
+                existing_codes = {
+                    str(issue.get("code")) for issue in current_issues if isinstance(issue, dict)
+                }
+                current_issues.extend(
+                    issue
+                    for issue in duplicate_blockers
+                    if str(issue.get("code")) not in existing_codes
+                )
+                envelope["issues"] = current_issues
+            if self._training_policy_allows(
+                envelope.get("policy")
+            ) and not self._training_record_explicitly_denied(envelope.get("rawRecord")):
+                envelope["disposition"] = "review"
+                if not envelope.get("issues"):
+                    envelope["issues"] = [
+                        {
+                            "code": "HUMAN_REVIEW_REQUIRED",
+                            "message": "The remapped record needs explicit approval or exclusion.",
+                            "severity": "warning",
+                        }
+                    ]
+            else:
+                envelope["disposition"] = "excluded"
+        history = envelope.get("processingHistory")
+        if not isinstance(history, list):
+            history = []
+            envelope["processingHistory"] = history
+        history.append(
+            {
+                "operation": "humanReview",
+                "mode": action,
+                "recipeDigest": recipe_digest,
+                "inputDigest": envelope.get("contentDigest"),
+                "outputDigest": envelope.get("contentDigest"),
+                **({"note": str(edit_note)[:2000]} if edit_note else {}),
+            }
+        )
+        return envelope
+
+    @staticmethod
+    def _training_issue_requires_exclusion(issue: dict[str, Any]) -> bool:
+        """Keep lossy or unsupported structures out of learned conversational rows."""
+
+        code = issue.get("code")
+        return isinstance(code, str) and (
+            code.startswith("UNSUPPORTED_") or code.endswith("_UNSUPPORTED")
+        )
+
+    def _reconcile_training_snapshot(self, revision: ContentRevision) -> TrainingCurationCounts:
+        """Check persisted counters, source membership, and unique IDs from the artifact."""
+
+        snapshot = revision.training_data_snapshot
+        if snapshot is None:
+            raise ValueError("ContentRevision has no training-data snapshot.")
+        path = self.artifacts.resolve(snapshot.artifact)
+        counts, per_source = self._count_training_records(path)
+        if counts != snapshot.counts or counts.total != snapshot.record_count:
+            raise ValueError("Training snapshot counts do not match its immutable artifact.")
+        if set(per_source) - set(revision.source_revision_ids):
+            raise ValueError("Training snapshot references a source outside the revision.")
+
+        index_path = self.artifacts.stage_path(f"{uuid4()}.training-record-index.sqlite3")
+        connection = sqlite3.connect(index_path)
+        try:
+            connection.execute("CREATE TABLE record_ids (id TEXT PRIMARY KEY)")
+            for envelope in self._iter_training_record_envelopes(path):
+                record_id = envelope.get("id")
+                if not isinstance(record_id, str) or not record_id:
+                    raise ValueError("Training record id is missing.")
+                try:
+                    connection.execute("INSERT INTO record_ids (id) VALUES (?)", (record_id,))
+                except sqlite3.IntegrityError as exc:
+                    raise ValueError("Training snapshot contains duplicate record ids.") from exc
+            connection.commit()
+        finally:
+            connection.close()
+            index_path.unlink(missing_ok=True)
+        return counts
+
+    def _verify_training_sft_export(
+        self,
+        bundle_path: Path,
+        files: dict[str, Any],
+        response: dict[str, Any],
+        run: ProcessingRun,
+        revision: ContentRevision,
+        output_format: str,
+        split_request: dict[str, Any],
+    ) -> None:
+        """Validate every learned split and reconcile its sidecar to the approved snapshot."""
+
+        snapshot = revision.training_data_snapshot
+        if snapshot is None:
+            raise ValueError("Training SFT export requires an artifact-backed snapshot.")
+        counts = self._reconcile_training_snapshot(revision)
+        if counts.pending_review:
+            raise ValueError("Training SFT export cannot contain pending-review records.")
+        expected_schema = {
+            "sft": ("instruction_history", ["instruction", "input", "output", "system", "history"]),
+            "messages": ("messages", ["messages"]),
+            "promptCompletion": ("prompt_completion", ["prompt", "completion"]),
+        }.get(output_format)
+        if expected_schema is None:
+            raise ValueError("The requested SFT output format is unsupported.")
+        schema_name, schema_fields = expected_schema
+        expected_counts = {
+            "total": counts.total,
+            "recognized": counts.recognized,
+            "formatErrors": counts.format_errors,
+            "duplicateCandidates": counts.duplicate_candidates,
+            "pendingReview": counts.pending_review,
+            "eligible": counts.eligible,
+            "excluded": counts.excluded,
+            "policyExcluded": 0,
+            "published": counts.eligible,
+        }
+        reported_counts = _json_object(response.get("counts"), "SFT export count ledger")
+        if any(
+            _int_field(reported_counts.get(key), f"counts.{key}") != value
+            for key, value in expected_counts.items()
+        ):
+            raise ValueError("SFT export counts do not reconcile to the approved snapshot.")
+        if _int_field(response.get("sample_count"), "sample_count") != counts.eligible:
+            raise ValueError("SFT sample count does not match approved eligible records.")
+        if response.get("output_format") != output_format:
+            raise ValueError("SFT exporter returned a different output format.")
+        if response.get("recipe_digest") != run.recipe_digest:
+            raise ValueError("SFT exporter returned a different processing recipe digest.")
+
+        index_path = self.artifacts.stage_path(f"{uuid4()}.sft-export-index.sqlite3")
+        connection = sqlite3.connect(index_path)
+        try:
+            connection.executescript(
+                "CREATE TABLE expected ("
+                "record_id TEXT PRIMARY KEY, sample_id TEXT NOT NULL, "
+                "source_revision_id TEXT NOT NULL, source_family_id TEXT NOT NULL, "
+                "conversation_id TEXT, locator_json TEXT NOT NULL, raw_digest TEXT NOT NULL, "
+                "content_digest TEXT NOT NULL, recipe_digest TEXT NOT NULL, "
+                "history_json TEXT NOT NULL, policy_json TEXT NOT NULL, "
+                "issues_json TEXT NOT NULL, split TEXT);"
+                "CREATE TABLE lineage_split ("
+                "kind TEXT NOT NULL, lineage_id TEXT NOT NULL, split TEXT NOT NULL, "
+                "PRIMARY KEY(kind, lineage_id));"
+                "CREATE TABLE recipe_digest (digest TEXT PRIMARY KEY);"
+            )
+            source_ids = {str(source_id) for source_id in revision.source_revision_ids}
+            snapshot_path = self.artifacts.resolve(snapshot.artifact)
+            for envelope in self._iter_training_record_envelopes(snapshot_path):
+                disposition = envelope.get("disposition")
+                if disposition == "excluded":
+                    continue
+                if disposition != "eligible":
+                    raise ValueError("Only approved eligible records may be exported.")
+                record_id = envelope.get("id")
+                sample_id = envelope.get("sampleId")
+                source_id = envelope.get("sourceRevisionId")
+                family_id = envelope.get("sourceFamilyId")
+                conversation_id = envelope.get("conversationId")
+                locator = envelope.get("locator")
+                normalized = envelope.get("normalized")
+                policy = envelope.get("policy")
+                issues = envelope.get("issues", [])
+                history = envelope.get("processingHistory")
+                content_digest = envelope.get("contentDigest")
+                recipe_digest = envelope.get("recipeDigest")
+                raw_line = envelope.get("rawLine")
+                raw_record = envelope.get("rawRecord")
+                if (
+                    not isinstance(record_id, str)
+                    or not record_id
+                    or not isinstance(sample_id, str)
+                    or not sample_id
+                    or not isinstance(source_id, str)
+                    or source_id not in source_ids
+                    or not isinstance(family_id, str)
+                    or not family_id
+                    or (conversation_id is not None and not isinstance(conversation_id, str))
+                    or not isinstance(locator, dict)
+                    or not isinstance(normalized, dict)
+                    or not isinstance(policy, dict)
+                    or not isinstance(issues, list)
+                    or not isinstance(history, list)
+                    or not isinstance(content_digest, str)
+                    or not re.fullmatch(r"sha256:[0-9a-f]{64}", content_digest)
+                    or not isinstance(recipe_digest, str)
+                    or not re.fullmatch(r"sha256:[0-9a-f]{64}", recipe_digest)
+                    or (raw_line is not None and not isinstance(raw_line, str))
+                ):
+                    raise ValueError("Approved training record lineage or provenance is invalid.")
+                if content_digest != _digest_bytes(_canonical_json(normalized)):
+                    raise ValueError("Approved training record content digest is invalid.")
+                raw_digest = _digest_bytes(
+                    raw_line.encode("utf-8")
+                    if raw_line is not None
+                    else _canonical_json(raw_record)
+                )
+                connection.execute(
+                    "INSERT INTO expected VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+                    (
+                        record_id,
+                        sample_id,
+                        source_id,
+                        family_id,
+                        conversation_id,
+                        _canonical_json(locator).decode("utf-8"),
+                        raw_digest,
+                        content_digest,
+                        recipe_digest,
+                        _canonical_json(history).decode("utf-8"),
+                        _canonical_json(policy).decode("utf-8"),
+                        _canonical_json(issues).decode("utf-8"),
+                    ),
+                )
+                connection.execute(
+                    "INSERT OR IGNORE INTO recipe_digest (digest) VALUES (?)",
+                    (recipe_digest,),
+                )
+            connection.commit()
+
+            recipe_digests = [
+                row[0]
+                for row in connection.execute("SELECT digest FROM recipe_digest ORDER BY digest")
+            ]
+            if response.get("source_recipe_digests") != recipe_digests:
+                raise ValueError("SFT source recipe digests do not match the approved snapshot.")
+
+            expected_files = {
+                "train.jsonl",
+                "validation.jsonl",
+                "test.jsonl",
+                "provenance.jsonl",
+                "manifest.json",
+            }
+            if set(files) != expected_files:
+                raise ValueError("SFT export file receipts are incomplete.")
+            row_counts: dict[str, int] = {}
+            provenance_counts = {name: 0 for name in ("train", "validation", "test")}
+            with zipfile.ZipFile(bundle_path) as archive:
+                if set(archive.namelist()) != expected_files:
+                    raise ValueError("SFT bundle members differ from the declared file receipts.")
+                for split_name in ("train", "validation", "test"):
+                    filename = f"{split_name}.jsonl"
+                    receipt = _json_object(files.get(filename), f"SFT {filename} receipt")
+                    if receipt.get("schema_fields") != schema_fields:
+                        raise ValueError(f"SFT {filename} schema receipt is invalid.")
+                    count = 0
+                    with archive.open(filename) as stream:
+                        while True:
+                            line = stream.readline(MAX_TRAINING_ROW_BYTES + 1)
+                            if not line:
+                                break
+                            if len(line) > MAX_TRAINING_ROW_BYTES or not line.strip():
+                                raise ValueError(f"SFT {filename} contains an invalid row.")
+                            row = json.loads(line.decode("utf-8"))
+                            if not isinstance(row, dict):
+                                raise ValueError(f"SFT {filename} row must be a JSON object.")
+                            self._validate_curation_export_row(row, output_format, count + 1)
+                            count += 1
+                    if _int_field(receipt.get("row_count"), f"{filename}.row_count") != count:
+                        raise ValueError(f"SFT {filename} row count differs from its receipt.")
+                    row_counts[split_name] = count
+
+                provenance_receipt = _json_object(
+                    files.get("provenance.jsonl"), "SFT provenance receipt"
+                )
+                required_provenance_fields = {
+                    "record_id",
+                    "sample_id",
+                    "source_revision_id",
+                    "source_family_id",
+                    "conversation_id",
+                    "locator",
+                    "raw_digest",
+                    "content_digest",
+                    "curation_recipe_digest",
+                    "processing_history",
+                    "policy",
+                    "issues",
+                    "split",
+                }
+                provenance_count = 0
+                with archive.open("provenance.jsonl") as stream:
+                    while True:
+                        line = stream.readline(MAX_TRAINING_ROW_BYTES + 1)
+                        if not line:
+                            break
+                        if len(line) > MAX_TRAINING_ROW_BYTES or not line.strip():
+                            raise ValueError("SFT provenance contains an invalid row.")
+                        receipt = json.loads(line.decode("utf-8"))
+                        if (
+                            not isinstance(receipt, dict)
+                            or set(receipt) != required_provenance_fields
+                        ):
+                            raise ValueError("SFT provenance row has an invalid schema.")
+                        export_record_id = receipt.get("record_id")
+                        export_split = receipt.get("split")
+                        expected = connection.execute(
+                            "SELECT sample_id, source_revision_id, source_family_id, "
+                            "conversation_id, locator_json, raw_digest, content_digest, "
+                            "recipe_digest, history_json, policy_json, issues_json, split "
+                            "FROM expected WHERE record_id = ?",
+                            (export_record_id,),
+                        ).fetchone()
+                        if (
+                            expected is None
+                            or not isinstance(export_split, str)
+                            or export_split not in provenance_counts
+                            or not isinstance(export_record_id, str)
+                            or not export_record_id
+                        ):
+                            raise ValueError(
+                                "SFT provenance refers to an unknown or excluded record."
+                            )
+                        expected_values = (
+                            expected[0],
+                            expected[1],
+                            expected[2],
+                            expected[3],
+                            expected[4],
+                            expected[5],
+                            expected[6],
+                            expected[7],
+                            expected[8],
+                            expected[9],
+                            expected[10],
+                        )
+                        received_values = (
+                            receipt.get("sample_id"),
+                            receipt.get("source_revision_id"),
+                            receipt.get("source_family_id"),
+                            receipt.get("conversation_id"),
+                            _canonical_json(receipt.get("locator")).decode("utf-8"),
+                            receipt.get("raw_digest"),
+                            receipt.get("content_digest"),
+                            receipt.get("curation_recipe_digest"),
+                            _canonical_json(receipt.get("processing_history")).decode("utf-8"),
+                            _canonical_json(receipt.get("policy")).decode("utf-8"),
+                            _canonical_json(receipt.get("issues")).decode("utf-8"),
+                        )
+                        if received_values != expected_values:
+                            raise ValueError("SFT provenance does not match its approved record.")
+                        updated = connection.execute(
+                            "UPDATE expected SET split = ? WHERE record_id = ? AND split IS NULL",
+                            (export_split, export_record_id),
+                        )
+                        if updated.rowcount != 1:
+                            raise ValueError("SFT provenance duplicates an approved record.")
+                        lineage_values = [("family", expected[2]), ("content", expected[6])]
+                        if expected[3] is not None:
+                            lineage_values.append(("conversation", expected[3]))
+                        for kind, lineage_id in lineage_values:
+                            prior = connection.execute(
+                                "SELECT split FROM lineage_split WHERE kind = ? AND lineage_id = ?",
+                                (kind, lineage_id),
+                            ).fetchone()
+                            if prior is not None and prior[0] != export_split:
+                                raise ValueError(
+                                    "SFT split leaks a source-family or conversation lineage."
+                                )
+                            connection.execute(
+                                "INSERT OR IGNORE INTO lineage_split (kind, lineage_id, split) "
+                                "VALUES (?, ?, ?)",
+                                (kind, lineage_id, export_split),
+                            )
+                        provenance_counts[export_split] += 1
+                        provenance_count += 1
+                if (
+                    _int_field(provenance_receipt.get("row_count"), "provenance.row_count")
+                    != provenance_count
+                ):
+                    raise ValueError("SFT provenance row count differs from its receipt.")
+                if connection.execute(
+                    "SELECT COUNT(*) FROM expected WHERE split IS NULL"
+                ).fetchone()[0]:
+                    raise ValueError("SFT provenance omitted an approved eligible record.")
+                if provenance_count != counts.eligible:
+                    raise ValueError("SFT provenance count does not match approved eligibility.")
+                if any(row_counts[name] != provenance_counts[name] for name in row_counts):
+                    raise ValueError("SFT learned rows do not reconcile with provenance splits.")
+
+                samples = {
+                    "train": row_counts["train"],
+                    "validation": row_counts["validation"],
+                    "test": row_counts["test"],
+                }
+                response_split_stats = _json_object(
+                    response.get("split_stats"), "SFT split statistics"
+                )
+                if response_split_stats.get("samples") != samples:
+                    raise ValueError("SFT split statistics do not match split JSONL rows.")
+                manifest_info = archive.getinfo("manifest.json")
+                if manifest_info.file_size > 2 * 1024 * 1024:
+                    raise ValueError("SFT manifest exceeds the supported size limit.")
+                manifest = _json_object(
+                    json.loads(archive.read("manifest.json").decode("utf-8")),
+                    "SFT manifest",
+                )
+                if (
+                    manifest.get("schema_version") != "cyrene.sft.bundle.v1"
+                    or manifest.get("profile") != "CYRENE_SFT_BUNDLE_V1"
+                    or manifest.get("dataset_id") != str(run.dataset_id)
+                    or manifest.get("content_revision_id") != str(revision.id)
+                    or manifest.get("processing_run_id") != str(run.id)
+                    or manifest.get("mode") != output_format
+                    or manifest.get("schema") != schema_name
+                    or manifest.get("recipe")
+                    != {
+                        "capability": _GENERATION_CAPABILITY,
+                        "method": "prepare_training_sft",
+                        "version": run.recipe_version,
+                        "digest": run.recipe_digest,
+                    }
+                    or manifest.get("source_recipe_digests") != recipe_digests
+                    or manifest.get("split_ratios")
+                    != {key: split_request[key] for key in ("train", "validation", "test")}
+                    or manifest.get("split_seed") != split_request.get("seed", 42)
+                    or manifest.get("split_stats") != response_split_stats
+                ):
+                    raise ValueError("SFT manifest lineage or recipe does not match the run.")
+                manifest_counts = _json_object(manifest.get("counts"), "SFT manifest counts")
+                expected_manifest_counts = {
+                    **expected_counts,
+                    "train": samples["train"],
+                    "validation": samples["validation"],
+                    "test": samples["test"],
+                }
+                if any(
+                    _int_field(manifest_counts.get(key), f"manifest.counts.{key}") != value
+                    for key, value in expected_manifest_counts.items()
+                ):
+                    raise ValueError("SFT manifest counts do not match its output rows.")
+                manifest_files = _json_object(manifest.get("files"), "SFT manifest files")
+                for name in expected_files - {"manifest.json"}:
+                    if manifest_files.get(name) != files.get(name):
+                        raise ValueError(
+                            "SFT manifest file receipts differ from the bundle receipt."
+                        )
+                for name, expected_rows in {
+                    "train.jsonl": row_counts["train"],
+                    "validation.jsonl": row_counts["validation"],
+                    "test.jsonl": row_counts["test"],
+                    "provenance.jsonl": provenance_count,
+                }.items():
+                    receipt = _json_object(files.get(name), f"SFT {name} receipt")
+                    if _int_field(receipt.get("row_count"), f"{name}.row_count") != expected_rows:
+                        raise ValueError(f"SFT {name} row count does not match verified content.")
+                manifest_receipt = _json_object(files.get("manifest.json"), "SFT manifest receipt")
+                if _int_field(manifest_receipt.get("row_count"), "manifest.row_count") != 1:
+                    raise ValueError("SFT manifest must be one complete receipt document.")
+        finally:
+            connection.close()
+            index_path.unlink(missing_ok=True)
+
+    def _count_training_records(
+        self,
+        path: Path,
+    ) -> tuple[TrainingCurationCounts, dict[UUID, dict[str, Any]]]:
+        """Reconcile dispositions and diagnostics from the edited JSONL artifact."""
+
+        counts: dict[str, int] = {
+            "total": 0,
+            "recognized": 0,
+            "formatErrors": 0,
+            "duplicateCandidates": 0,
+            "pendingReview": 0,
+            "excluded": 0,
+            "eligible": 0,
+        }
+        per_source: dict[UUID, dict[str, Any]] = {}
+        for envelope in self._iter_training_record_envelopes(path):
+            source_id = UUID(str(envelope["sourceRevisionId"]))
+            source_counts = per_source.setdefault(
+                source_id,
+                {
+                    "total": 0,
+                    "reviewItems": 0,
+                    "diagnosticCounts": {},
+                },
+            )
+            counts["total"] += 1
+            source_counts["total"] += 1
+            if envelope.get("detectedFormat") not in {None, "unknown"}:
+                counts["recognized"] += 1
+            issues = envelope.get("issues", [])
+            if not isinstance(issues, list) or any(
+                not isinstance(issue, dict)
+                or not isinstance(issue.get("code"), str)
+                or not issue.get("code")
+                or not isinstance(issue.get("severity", "warning"), str)
+                or issue.get("severity", "warning") not in {"warning", "error"}
+                for issue in issues
+            ):
+                raise ValueError("Training record issues are invalid.")
+            if any(
+                isinstance(issue, dict)
+                and issue.get("code")
+                in {
+                    "INVALID_JSON",
+                    "training.invalid_json",
+                    "INVALID_ENCODING",
+                    "FORMAT_UNRECOGNIZED",
+                    "MESSAGE_STRUCTURE_INVALID",
+                    "FIELD_MISSING",
+                    "FIELD_TYPE_INVALID",
+                }
+                for issue in issues
+            ):
+                counts["formatErrors"] += 1
+            disposition = envelope.get("disposition")
+            if disposition == "review":
+                counts["pendingReview"] += 1
+                if not issues:
+                    raise ValueError(
+                        "Review records must retain at least one issue in the artifact."
+                    )
+                source_counts["reviewItems"] += len(issues)
+                for issue in issues:
+                    code = str(issue["code"])
+                    source_counts["diagnosticCounts"][code] = (
+                        source_counts["diagnosticCounts"].get(code, 0) + 1
+                    )
+            elif disposition == "excluded":
+                counts["excluded"] += 1
+            elif disposition == "eligible":
+                if not isinstance(envelope.get("normalized"), dict):
+                    raise ValueError("Eligible training records require normalized messages.")
+                if not self._training_policy_allows(
+                    envelope.get("policy")
+                ) or self._training_record_explicitly_denied(envelope.get("rawRecord")):
+                    raise ValueError("Policy-denied records cannot be eligible for training.")
+                if any(
+                    issue.get("severity") == "error"
+                    or self._training_issue_requires_exclusion(issue)
+                    for issue in issues
+                ):
+                    raise ValueError(
+                        "Unresolved or unrepresentable records cannot be eligible for training."
+                    )
+                counts["eligible"] += 1
+            else:
+                raise ValueError("Training record disposition is invalid.")
+            if any(
+                isinstance(issue, dict) and issue.get("code") == "DUPLICATE_EXACT"
+                for issue in issues
+            ):
+                counts["duplicateCandidates"] += 1
+        return TrainingCurationCounts.model_validate(counts), per_source
+
     def resolve_review_item(
         self,
         item_id: UUID,
@@ -596,7 +1823,10 @@ class DataToolsService:
         self._validate_run_config(operation, config)
         selected_sources: list[SourceRevision] = []
         revision: ContentRevision | None = None
-        if operation == ProcessingOperation.PARSE:
+        if operation in {
+            ProcessingOperation.PARSE,
+            ProcessingOperation.CURATE_TRAINING_DATA,
+        }:
             all_sources = self.store.list_sources(dataset_id, principal)
             if source_revision_ids:
                 source_by_id = {item.id: item for item in all_sources}
@@ -625,6 +1855,9 @@ class DataToolsService:
                     "Upload at least one source before starting a parse run.",
                     409,
                 )
+            if operation == ProcessingOperation.CURATE_TRAINING_DATA:
+                prior_revisions = self.store.list_content_revisions(dataset_id, principal)
+                revision = prior_revisions[0] if prior_revisions else None
         else:
             if content_revision_id is None:
                 raise _error(
@@ -656,8 +1889,22 @@ class DataToolsService:
 
         # Configuration problems are rejected before durable admission; they are
         # never translated into a source-format error by an async worker.
-        for source in selected_sources if operation == ProcessingOperation.PARSE else [None]:
-            if source is not None:
+        if operation == ProcessingOperation.CURATE_TRAINING_DATA:
+            source_policies = config.get("sourcePolicies", {})
+            selected_source_id_texts = {str(source.id) for source in selected_sources}
+            if set(source_policies) - selected_source_id_texts:
+                raise _error(
+                    "CATALYST_SOURCE_POLICY_INVALID",
+                    "Source policy is invalid",
+                    "sourcePolicies may only reference selected SourceRevisions.",
+                    422,
+                )
+        for source in (
+            selected_sources
+            if operation in {ProcessingOperation.PARSE, ProcessingOperation.CURATE_TRAINING_DATA}
+            else [None]
+        ):
+            if source is not None and operation == ProcessingOperation.PARSE:
                 if source.media_type == "application/x-ndjson":
                     continue
                 if source.media_type not in (
@@ -717,7 +1964,10 @@ class DataToolsService:
         )
         try:
             self.store.create_run(run, principal)
-            if operation == ProcessingOperation.PARSE:
+            if operation in {
+                ProcessingOperation.PARSE,
+                ProcessingOperation.CURATE_TRAINING_DATA,
+            }:
                 for source in selected_sources:
                     report_time = utc_now()
                     self.store.save_source_parse_report(
@@ -750,8 +2000,9 @@ class DataToolsService:
 
         allowed = {
             ProcessingOperation.PARSE: set(),
+            ProcessingOperation.CURATE_TRAINING_DATA: {"curation", "sourcePolicies"},
             ProcessingOperation.BUILD_KNOWLEDGE: set(),
-            ProcessingOperation.PREPARE_SFT: {"sftMode", "split"},
+            ProcessingOperation.PREPARE_SFT: {"sftMode", "outputFormat", "split"},
             ProcessingOperation.GENERATE_QA: {"generation", "split"},
         }[operation]
         unknown = set(config) - allowed
@@ -769,6 +2020,130 @@ class DataToolsService:
                 "sftMode must be instruction or conversation.",
                 422,
             )
+        if config.get("outputFormat", "sft") not in {"sft", "messages", "promptCompletion"}:
+            raise _error(
+                "CATALYST_SFT_FORMAT_INVALID",
+                "SFT output format is invalid",
+                "outputFormat must be sft, messages, or promptCompletion.",
+                422,
+            )
+        if operation == ProcessingOperation.CURATE_TRAINING_DATA:
+            curation = config.get("curation")
+            if not isinstance(curation, dict):
+                raise _error(
+                    "CATALYST_CURATION_RECIPE_REQUIRED",
+                    "Curation recipe required",
+                    "curateTrainingData requires a versioned curation recipe.",
+                    422,
+                )
+            recipe_fields = {
+                "id",
+                "version",
+                "format",
+                "fieldMapping",
+                "roleMapping",
+                "maxCharacters",
+                "minCharacters",
+                "unicodeNormalization",
+            }
+            if set(curation) - recipe_fields or not {"id", "version", "format"} <= set(curation):
+                raise _error(
+                    "CATALYST_CURATION_RECIPE_INVALID",
+                    "Curation recipe is invalid",
+                    "The curation recipe contains unsupported or missing fields.",
+                    422,
+                )
+            if curation["format"] not in {
+                "auto",
+                "alpaca",
+                "promptCompletion",
+                "messages",
+                "sharegpt",
+                "chatml",
+            }:
+                raise _error(
+                    "CATALYST_CURATION_FORMAT_INVALID",
+                    "Curation format is invalid",
+                    "The selected curation format is not supported.",
+                    422,
+                )
+            if not isinstance(curation["id"], str) or not curation["id"].strip():
+                raise _error(
+                    "CATALYST_CURATION_RECIPE_INVALID",
+                    "Curation recipe is invalid",
+                    "Recipe id must be a non-empty string.",
+                    422,
+                )
+            if not isinstance(curation["version"], str) or not curation["version"].strip():
+                raise _error(
+                    "CATALYST_CURATION_RECIPE_INVALID",
+                    "Curation recipe is invalid",
+                    "Recipe version must be a non-empty string.",
+                    422,
+                )
+            for key, default, minimum, maximum in (
+                ("maxCharacters", 100_000, 1, 10_000_000),
+                ("minCharacters", 2, 0, 10_000_000),
+            ):
+                value = curation.get(key, default)
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or not minimum <= value <= maximum
+                ):
+                    raise _error(
+                        "CATALYST_CURATION_RECIPE_INVALID",
+                        "Curation recipe is invalid",
+                        f"{key} must be a positive integer no greater than {maximum}.",
+                        422,
+                    )
+            if curation.get("minCharacters", 2) > curation.get("maxCharacters", 100_000):
+                raise _error(
+                    "CATALYST_CURATION_RECIPE_INVALID",
+                    "Curation recipe is invalid",
+                    "minCharacters cannot exceed maxCharacters.",
+                    422,
+                )
+            if curation.get("unicodeNormalization", "NFC") not in {
+                "NFC",
+                "NFD",
+                "NFKC",
+                "NFKD",
+                "none",
+            }:
+                raise _error(
+                    "CATALYST_CURATION_RECIPE_INVALID",
+                    "Curation recipe is invalid",
+                    "unicodeNormalization must be NFC, NFKC, or none.",
+                    422,
+                )
+            if not isinstance(curation.get("fieldMapping", {}), dict) or not isinstance(
+                curation.get("roleMapping", {}), dict
+            ):
+                raise _error(
+                    "CATALYST_CURATION_RECIPE_INVALID",
+                    "Curation recipe is invalid",
+                    "fieldMapping and roleMapping must be objects.",
+                    422,
+                )
+            source_policies = config.get("sourcePolicies", {})
+            if not isinstance(source_policies, dict):
+                raise _error(
+                    "CATALYST_SOURCE_POLICY_INVALID",
+                    "Source policy is invalid",
+                    "sourcePolicies must map source revision ids to ContentPolicy objects.",
+                    422,
+                )
+            try:
+                for policy in source_policies.values():
+                    ContentPolicy.model_validate(policy)
+            except ValueError as exc:
+                raise _error(
+                    "CATALYST_SOURCE_POLICY_INVALID",
+                    "Source policy is invalid",
+                    "Every source policy must match the existing ContentPolicy contract.",
+                    422,
+                ) from exc
 
     @staticmethod
     def _validate_split(value: Any) -> dict[str, float] | None:
@@ -1000,6 +2375,25 @@ class DataToolsService:
         """Approve or reject one draft without changing its immutable blocks."""
 
         current = self.get_content_revision(revision_id, principal)
+        if decision == ContentRevisionState.APPROVED and current.training_data_snapshot is not None:
+            try:
+                counts = self._reconcile_training_snapshot(current)
+            except (CatalystError, OSError, sqlite3.Error, ValueError) as exc:
+                raise _error(
+                    "CATALYST_TRAINING_SNAPSHOT_INVALID",
+                    "Training snapshot is invalid",
+                    "The immutable record artifact does not match its saved lineage "
+                    "and count ledger.",
+                    409,
+                ) from exc
+            if counts.pending_review > 0:
+                raise _error(
+                    "CATALYST_TRAINING_RECORDS_PENDING_REVIEW",
+                    "Training records require review",
+                    "Approve or exclude every pending training record before "
+                    "approving the revision.",
+                    409,
+                )
         if current.state != ContentRevisionState.DRAFT:
             if current.state == decision:
                 return current
@@ -1031,12 +2425,12 @@ class DataToolsService:
         *,
         dataset_id: UUID,
         content_revision_id: UUID,
-        knowledge_run_id: UUID,
+        knowledge_run_id: UUID | None,
         sft_run_id: UUID,
         idempotency_key: str | None,
         principal: WorkspaceServicePrincipal | None = None,
     ) -> DatasetVersion:
-        """Publish both approved profile refs through the existing DatasetVersion store."""
+        """Publish SFT alone for curation or both refs for the established dual profile."""
 
         self.require_dataset(dataset_id, principal)
         request_payload = {
@@ -1079,21 +2473,32 @@ class DataToolsService:
                     "Approve the selected ContentRevision before publication.",
                     409,
                 )
-            knowledge = self.get_run(knowledge_run_id, principal)
             sft = self.get_run(sft_run_id, principal)
-            self._require_publishable_run(
-                knowledge,
-                dataset_id,
-                revision.id,
-                ProcessingOperation.BUILD_KNOWLEDGE,
-            )
+            knowledge: ProcessingRun | None = None
+            if knowledge_run_id is not None:
+                knowledge = self.get_run(knowledge_run_id, principal)
+                self._require_publishable_run(
+                    knowledge,
+                    dataset_id,
+                    revision.id,
+                    ProcessingOperation.BUILD_KNOWLEDGE,
+                )
+            elif revision.training_data_snapshot is None:
+                raise _error(
+                    "CATALYST_KNOWLEDGE_RUN_REQUIRED",
+                    "Knowledge output required",
+                    "Only an approved training-curation snapshot may publish an SFT-only version.",
+                    422,
+                )
             self._require_publishable_run(
                 sft,
                 dataset_id,
                 revision.id,
                 ProcessingOperation.PREPARE_SFT,
             )
-            knowledge_artifact = self._run_package_artifact(knowledge)
+            knowledge_artifact = (
+                self._run_package_artifact(knowledge) if knowledge is not None else None
+            )
             sft_artifact = self._run_package_artifact(sft)
             source_revisions = [
                 self.store.get_source(source_id, principal)
@@ -1107,11 +2512,21 @@ class DataToolsService:
                     "The approved ContentRevision has no readable source revisions.",
                     409,
                 )
-            train_artifact, row_count, schema_fields = self._publish_sft_train(sft_artifact, sft)
+            train_artifact, row_count, schema_fields = self._publish_sft_train(
+                sft_artifact,
+                sft,
+                output_format=(
+                    sft.recipe.get("config", {}).get("outputFormat", "sft")
+                    if revision.training_data_snapshot is not None
+                    else None
+                ),
+            )
             now = utc_now()
             version_id = uuid4()
             lineage: list[LineageEdge] = []
-            targets = {knowledge_artifact.digest, sft_artifact.digest, train_artifact.digest}
+            targets = {sft_artifact.digest, train_artifact.digest}
+            if knowledge_artifact is not None:
+                targets.add(knowledge_artifact.digest)
             for source in sources:
                 for target in targets:
                     if source.digest != target:
@@ -1134,6 +2549,9 @@ class DataToolsService:
                 data_tools=DataToolsVersionProjection(
                     content_revision_id=revision.id,
                     source_revision_ids=[source.id for source in sources],
+                    knowledge_profile=(
+                        "CYRENE_KNOWLEDGE_BUNDLE_V1" if knowledge_artifact is not None else None
+                    ),
                     knowledge_artifact=knowledge_artifact,
                     sft_artifact=sft_artifact,
                     stale=False,
@@ -1211,41 +2629,62 @@ class DataToolsService:
         self,
         package: ArtifactRef,
         run: ProcessingRun,
+        *,
+        output_format: str | None = None,
     ) -> tuple[ArtifactRef, int, list[str]]:
-        """Extract only the canonical train JSONL from a verified SFT ZIP."""
+        """Stream the train JSONL from a verified SFT ZIP into an immutable artifact."""
 
         package_path = self.artifacts.resolve(package)
-        try:
-            with zipfile.ZipFile(package_path) as archive:
-                info = archive.getinfo("train.jsonl")
-                if info.file_size > MAX_ZIP_ENTRY_BYTES or info.flag_bits & 0x1:
-                    raise ValueError("train.jsonl exceeds the supported size or is encrypted")
-                train_bytes = archive.read(info)
-        except (OSError, KeyError, zipfile.BadZipFile, ValueError) as exc:
-            raise _error(
-                "CATALYST_SFT_PACKAGE_INVALID",
-                "SFT package is invalid",
-                "The completed SFT package must contain a readable train.jsonl file.",
-                422,
-            ) from exc
+        staged = self.artifacts.stage_path(f"{uuid4()}.train.jsonl")
+        digest = hashlib.sha256()
         count = 0
         schemas: set[str] = set()
         try:
-            for line_number, line in enumerate(train_bytes.splitlines(), start=1):
-                if not line.strip():
-                    raise ValueError(f"blank JSONL line {line_number}")
-                record = json.loads(line)
-                if not isinstance(record, dict):
-                    raise ValueError(f"line {line_number} is not an object")
-                schemas.update(str(key) for key in record)
-                count += 1
-        except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            with zipfile.ZipFile(package_path) as archive:
+                names = archive.namelist()
+                if len(names) != len(set(names)):
+                    raise ValueError("SFT package contains duplicate member names")
+                info = archive.getinfo("train.jsonl")
+                if info.file_size > MAX_ZIP_ENTRY_BYTES or info.flag_bits & 0x1:
+                    raise ValueError("train.jsonl exceeds the supported size or is encrypted")
+                with archive.open(info) as member, staged.open("wb") as output:
+                    for line_number, line in enumerate(member, start=1):
+                        if len(line) > MAX_TRAINING_ROW_BYTES:
+                            raise ValueError(f"train row {line_number} exceeds the supported size")
+                        if not line.strip():
+                            raise ValueError(f"blank JSONL line {line_number}")
+                        record = json.loads(line.decode("utf-8"))
+                        if not isinstance(record, dict):
+                            raise ValueError(f"line {line_number} is not an object")
+                        if output_format is not None:
+                            self._validate_curation_export_row(record, output_format, line_number)
+                        schemas.update(str(key) for key in record)
+                        output.write(line)
+                        digest.update(line)
+                        count += 1
+        except (
+            OSError,
+            KeyError,
+            zipfile.BadZipFile,
+            UnicodeError,
+            json.JSONDecodeError,
+            ValueError,
+        ) as exc:
+            staged.unlink(missing_ok=True)
             raise _error(
                 "CATALYST_SFT_PACKAGE_INVALID",
                 "SFT package is invalid",
                 "train.jsonl must contain one valid JSON object per line.",
                 422,
             ) from exc
+        if count == 0:
+            staged.unlink(missing_ok=True)
+            raise _error(
+                "CATALYST_SFT_PACKAGE_INVALID",
+                "SFT package is invalid",
+                "train.jsonl must contain at least one training record.",
+                422,
+            )
         stage_output = next(
             (stage.output for stage in run.stages if stage.output is not None),
             {},
@@ -1258,13 +2697,12 @@ class DataToolsService:
                 "train.jsonl row count does not match the Plugin receipt.",
                 422,
             )
-        staged = self.artifacts.stage_path(f"{uuid4()}.train.jsonl")
         try:
-            staged.write_bytes(train_bytes)
+            expected_digest = f"sha256:{digest.hexdigest()}"
             artifact = self.artifacts.publish(staged, "dataset")
         finally:
             staged.unlink(missing_ok=True)
-        if artifact.digest != _digest_bytes(train_bytes):
+        if artifact.digest != expected_digest:
             raise _error(
                 "CATALYST_ARTIFACT_IDENTITY_INVALID",
                 "Artifact identity invalid",
@@ -1272,6 +2710,68 @@ class DataToolsService:
                 500,
             )
         return artifact, count, sorted(schemas)
+
+    @staticmethod
+    def _validate_curation_export_row(
+        record: dict[str, Any], output_format: str, line_number: int
+    ) -> None:
+        """Validate learned rows without admitting provenance or management fields."""
+
+        schemas = {
+            "sft": {"instruction", "input", "output", "system", "history"},
+            "messages": {"messages"},
+            "promptCompletion": {"prompt", "completion"},
+        }
+        allowed = schemas.get(output_format)
+        if allowed is None or set(record) != allowed:
+            raise ValueError(f"line {line_number} does not match the requested learned schema")
+        if output_format == "messages":
+            messages = record["messages"]
+            if not isinstance(messages, list) or not messages:
+                raise ValueError(f"line {line_number} has no conversation messages")
+            expected_role = "user"
+            saw_user = False
+            saw_assistant = False
+            for index, message in enumerate(messages):
+                if not isinstance(message, dict) or set(message) != {"role", "content"}:
+                    raise ValueError(f"line {line_number} message {index} has unsupported fields")
+                role = message.get("role")
+                content = message.get("content")
+                if not isinstance(content, str) or not content.strip():
+                    raise ValueError(f"line {line_number} message {index} is empty")
+                if role == "system" and index == 0:
+                    continue
+                if role != expected_role:
+                    raise ValueError(f"line {line_number} conversation roles are out of order")
+                saw_user = saw_user or role == "user"
+                saw_assistant = saw_assistant or role == "assistant"
+                expected_role = "assistant" if expected_role == "user" else "user"
+            if expected_role != "user" or not saw_user or not saw_assistant:
+                raise ValueError(f"line {line_number} conversation has no final assistant turn")
+            return
+        if output_format == "promptCompletion":
+            if any(not isinstance(record[key], str) or not record[key].strip() for key in allowed):
+                raise ValueError(
+                    f"line {line_number} prompt/completion fields must be non-empty text"
+                )
+            return
+        if (
+            any(
+                not isinstance(record[key], str)
+                for key in ("instruction", "input", "output", "system")
+            )
+            or not record["instruction"].strip()
+            or not record["output"].strip()
+        ):
+            raise ValueError(f"line {line_number} SFT text fields are invalid")
+        history = record["history"]
+        if not isinstance(history, list) or any(
+            not isinstance(pair, list)
+            or len(pair) != 2
+            or any(not isinstance(text, str) or not text.strip() for text in pair)
+            for pair in history
+        ):
+            raise ValueError(f"line {line_number} SFT history is invalid")
 
     def list_versions(
         self,
@@ -1324,6 +2824,13 @@ class DataToolsService:
             if profile == "knowledge"
             else version.data_tools.sft_artifact
         )
+        if artifact is None:
+            raise _error(
+                "CATALYST_DATA_TOOLS_EXPORT_NOT_FOUND",
+                "Data Tools export not found",
+                "This DatasetVersion does not contain the requested profile package.",
+                404,
+            )
         path = self.artifacts.resolve(artifact)
         try:
             if artifact.size_bytes > MAX_RESULT_BYTES:
@@ -1588,6 +3095,8 @@ class DataToolsService:
                     ]
                 )
             )
+            if revision.training_data_snapshot is not None:
+                parts["trainingDataDigest"] = revision.training_data_snapshot.artifact.digest
         return _digest_bytes(_canonical_json(parts))
 
     def _run_stage(
@@ -1601,6 +3110,8 @@ class DataToolsService:
         try:
             if run.operation == ProcessingOperation.PARSE:
                 return self._parse_sources(run, cancel_event)
+            if run.operation == ProcessingOperation.CURATE_TRAINING_DATA:
+                return self._curate_training_data(run, cancel_event)
             if run.operation == ProcessingOperation.BUILD_KNOWLEDGE:
                 return self._build_knowledge(run, cancel_event)
             if run.operation == ProcessingOperation.PREPARE_SFT:
@@ -1968,6 +3479,906 @@ class DataToolsService:
             "structuredImports": structured_imports,
             "warnings": warning_entries,
         }
+
+    def _curate_training_data(self, run: ProcessingRun, cancel_event: Any) -> dict[str, Any]:
+        """Stream mixed structured sources through the preparation Plugin."""
+
+        config = run.recipe.get("config", {})
+        curation = config.get("curation", {})
+        source_policy_values = config.get("sourcePolicies", {})
+        sources = self._worker_sources(run.source_revision_ids)
+        source_by_id = {source.id: source for source in sources}
+        selected_ids = set(source_by_id)
+        previous = (
+            self.store.get_content_revision_for_worker(run.content_revision_id)
+            if run.content_revision_id is not None
+            else None
+        )
+        retained_source_ids: set[UUID] = set()
+        if previous is not None and previous.training_data_snapshot is not None:
+            retained_source_ids = set(previous.source_revision_ids) - selected_ids
+
+        report_by_source = {
+            report.source_revision_id: report
+            for report in self.store.list_source_parse_reports_for_worker(run.dataset_id, run.id)
+        }
+        all_report_source_ids = selected_ids | retained_source_ids
+        for source_id in sorted(all_report_source_ids, key=str):
+            report = report_by_source.get(source_id)
+            if report is None:
+                now = utc_now()
+                report = SourceParseReport(
+                    id=uuid5(_REVIEW_NAMESPACE, f"curation-report:{run.id}:{source_id}"),
+                    dataset_id=run.dataset_id,
+                    source_revision_id=source_id,
+                    processing_run_id=run.id,
+                    status=SourceParseReportState.QUEUED,
+                    created_at=now,
+                    updated_at=now,
+                )
+            report = self.store.save_source_parse_report_for_worker(
+                report.model_copy(
+                    update={
+                        "status": SourceParseReportState.RUNNING,
+                        "started_at": report.started_at or utc_now(),
+                        "finished_at": None,
+                        "updated_at": utc_now(),
+                        "failure": None,
+                    }
+                )
+            )
+            report_by_source[source_id] = report
+
+        def fail_open_reports(code: str, message: str, retryable: bool) -> None:
+            """Make every unfinished source receipt terminal when the run fails."""
+
+            for source_id, current_report in list(report_by_source.items()):
+                if current_report.status != SourceParseReportState.RUNNING:
+                    continue
+                failed = current_report.model_copy(
+                    update={
+                        "status": SourceParseReportState.FAILED,
+                        "failure": ProcessingFailure(
+                            code=code,
+                            message=message[:2000],
+                            retryable=retryable,
+                        ),
+                        "finished_at": utc_now(),
+                        "updated_at": utc_now(),
+                    }
+                )
+                self.store.save_source_parse_report_for_worker(failed)
+                report_by_source[source_id] = failed
+
+        if cancel_event.is_set():
+            fail_open_reports(
+                "CATALYST_RUN_CANCELLED",
+                "The training-data curation run was cancelled before Plugin invocation.",
+                False,
+            )
+            raise StageExecutionFailure(
+                "CATALYST_RUN_CANCELLED",
+                "The training-data curation run was cancelled before Plugin invocation.",
+                retryable=False,
+                outcome_unknown=False,
+            )
+
+        checkpoint_key = hashlib.sha256(
+            _canonical_json(
+                {
+                    "datasetId": str(run.dataset_id),
+                    "recipeDigest": run.recipe_digest,
+                    "sources": sorted(
+                        (
+                            str(source.id),
+                            str(source.source_id),
+                            source.digest,
+                        )
+                        for source in sources
+                    ),
+                }
+            )
+        ).hexdigest()
+        # A retry is a new ProcessingRun with a new id. Keep the output path
+        # stable for this exact dataset/recipe/source set so the Plugin can
+        # validate and resume its durable checkpoint instead of truncating it.
+        result_path = self.artifacts.stage_path(f"curation-{checkpoint_key}.training-records.jsonl")
+        checkpoint_path = self.artifacts.stage_path(f"curation-{checkpoint_key}.checkpoint.json")
+        preserve_checkpoint_output = True
+        source_requests: list[dict[str, Any]] = []
+        for source in sources:
+            configured_policy = source_policy_values.get(str(source.id), {})
+            policy = ContentPolicy.model_validate(configured_policy)
+            source_requests.append(
+                {
+                    "source_path": str(self.artifacts.resolve(source.artifact).resolve()),
+                    "source_revision_id": str(source.id),
+                    "source_family_id": str(source.source_id),
+                    "filename": source.filename,
+                    "policy": policy.model_dump(by_alias=True, exclude_none=True),
+                }
+            )
+
+        plugin_recipe = {
+            "id": curation["id"],
+            "version": curation["version"],
+            "format": curation["format"],
+            "fieldMapping": curation.get("fieldMapping", {}),
+            "roleMapping": curation.get("roleMapping", {}),
+            "maxCharacters": curation.get("maxCharacters", 100_000),
+            "minCharacters": curation.get("minCharacters", 2),
+            "unicodeNormalization": curation.get("unicodeNormalization", "NFC"),
+        }
+        try:
+            response = self._invoke_plugin(
+                capability="dataset.preparation.v1",
+                environment_name=DATASET_PREPARATION_CONNECTION_ENV,
+                method="curate_training_records",
+                request={
+                    "sources": source_requests,
+                    "result_path": str(result_path.resolve()),
+                    "checkpoint_path": str(checkpoint_path.resolve()),
+                    "recipe_digest": run.recipe_digest,
+                    "recipe": plugin_recipe,
+                },
+                cancel_event=cancel_event,
+            )
+            if (
+                response.get("result_path") != str(result_path.resolve())
+                or response.get("schema_version") != "cyrene.training-record.v1"
+                or response.get("recipe_digest") != run.recipe_digest
+            ):
+                raise StageExecutionFailure(
+                    "CATALYST_PLUGIN_RECEIPT_INVALID",
+                    "The curation Plugin receipt does not match this run.",
+                    retryable=False,
+                    outcome_unknown=False,
+                )
+            _verify_file_receipt(
+                result_path,
+                response.get("digest"),
+                response.get("size_bytes"),
+                "training records",
+            )
+            source_receipts = response.get("sources")
+            if not isinstance(source_receipts, list) or len(source_receipts) != len(sources):
+                raise StageExecutionFailure(
+                    "CATALYST_PLUGIN_RECEIPT_INVALID",
+                    "The curation Plugin must return one receipt per selected source.",
+                    retryable=False,
+                    outcome_unknown=False,
+                )
+            receipt_by_source: dict[UUID, dict[str, Any]] = {}
+            for receipt in source_receipts:
+                if not isinstance(receipt, dict):
+                    raise StageExecutionFailure(
+                        "CATALYST_PLUGIN_RECEIPT_INVALID",
+                        "A curation source receipt is invalid.",
+                        retryable=False,
+                        outcome_unknown=False,
+                    )
+                try:
+                    source_id = UUID(str(receipt.get("source_revision_id")))
+                except ValueError as exc:
+                    raise StageExecutionFailure(
+                        "CATALYST_PLUGIN_RECEIPT_INVALID",
+                        "A curation source receipt has an invalid SourceRevision id.",
+                        retryable=False,
+                        outcome_unknown=False,
+                    ) from exc
+                if source_id not in selected_ids or source_id in receipt_by_source:
+                    raise StageExecutionFailure(
+                        "CATALYST_PLUGIN_RECEIPT_INVALID",
+                        "The curation Plugin returned a duplicate or foreign source receipt.",
+                        retryable=False,
+                        outcome_unknown=False,
+                    )
+                if receipt.get("status") not in {
+                    "SUCCEEDED",
+                    "SUCCEEDED_WITH_WARNINGS",
+                    "FAILED",
+                }:
+                    raise StageExecutionFailure(
+                        "CATALYST_PLUGIN_RECEIPT_INVALID",
+                        "A curation source receipt has an invalid terminal status.",
+                        retryable=False,
+                        outcome_unknown=False,
+                    )
+                self._validated_histogram(receipt.get("diagnostic_counts", {}), "diagnostic_counts")
+                self._validated_histogram(
+                    receipt.get("unsupported_counts", {}), "unsupported_counts"
+                )
+                receipt_by_source[source_id] = receipt
+
+            merged_path = self.artifacts.stage_path(f"{run.id}.training-records-merged.jsonl")
+            previous_path: Path | None = None
+            if (
+                previous is not None
+                and previous.training_data_snapshot is not None
+                and retained_source_ids
+            ):
+                previous_path = self.artifacts.resolve(previous.training_data_snapshot.artifact)
+            selected_success_ids = {
+                source_id
+                for source_id, receipt in receipt_by_source.items()
+                if receipt.get("status") in {"SUCCEEDED", "WARNING", "SUCCEEDED_WITH_WARNINGS"}
+            }
+            selected_failed_ids = selected_ids - selected_success_ids
+            emitted_rows = any(
+                receipt.get("counts", {}).get("total", 0) > 0
+                for receipt in receipt_by_source.values()
+            )
+            if not emitted_rows and not retained_source_ids:
+                raise StageExecutionFailure(
+                    "CATALYST_TRAINING_DATA_EMPTY",
+                    "No source produced a usable training-record snapshot.",
+                    retryable=False,
+                    outcome_unknown=False,
+                )
+
+            if previous_path is not None:
+                merged_path = self.artifacts.stage_path(f"{run.id}.training-records-merged.jsonl")
+                selected_id_text = {str(source_id) for source_id in selected_ids}
+                with merged_path.open("wb") as output:
+                    if previous_path is not None:
+                        for envelope in self._iter_training_record_envelopes(previous_path):
+                            if str(envelope.get("sourceRevisionId")) not in selected_id_text:
+                                output.write(_canonical_json(envelope))
+                                output.write(b"\n")
+                    for envelope in self._iter_training_record_envelopes(result_path):
+                        if str(envelope.get("sourceRevisionId")) in selected_id_text:
+                            output.write(_canonical_json(envelope))
+                            output.write(b"\n")
+            else:
+                merged_path = result_path
+
+            if merged_path.stat().st_size > MAX_RESULT_BYTES:
+                raise StageExecutionFailure(
+                    "CATALYST_PLUGIN_OUTPUT_TOO_LARGE",
+                    "The normalized training snapshot exceeds Catalyst's supported artifact size.",
+                    retryable=False,
+                    outcome_unknown=False,
+                )
+
+            # Validate each row and reconcile dispositions from the actual artifact.
+            actual_counts = {
+                "total": 0,
+                "recognized": 0,
+                "formatErrors": 0,
+                "duplicateCandidates": 0,
+                "pendingReview": 0,
+                "excluded": 0,
+                "eligible": 0,
+            }
+            source_counts: dict[UUID, dict[str, int]] = {
+                source_id: {
+                    "total": 0,
+                    "recognized": 0,
+                    "formatErrors": 0,
+                    "duplicateCandidates": 0,
+                    "pendingReview": 0,
+                    "excluded": 0,
+                    "eligible": 0,
+                    "reviewItems": 0,
+                }
+                for source_id in all_report_source_ids
+            }
+            diagnostic_counts: dict[UUID, dict[str, int]] = {
+                source_id: {} for source_id in source_counts
+            }
+            unsupported_counts: dict[UUID, dict[str, int]] = {
+                source_id: {} for source_id in source_counts
+            }
+            selected_actual: dict[UUID, dict[str, int]] = {
+                source_id: {
+                    "total": 0,
+                    "recognized": 0,
+                    "formatErrors": 0,
+                    "duplicateCandidates": 0,
+                    "pendingReview": 0,
+                    "excluded": 0,
+                    "eligible": 0,
+                }
+                for source_id in selected_ids
+            }
+            for envelope in self._iter_training_record_envelopes(merged_path):
+                source_text = envelope.get("sourceRevisionId")
+                try:
+                    source_id = UUID(str(source_text))
+                except ValueError as exc:
+                    raise StageExecutionFailure(
+                        "CATALYST_PLUGIN_OUTPUT_INVALID",
+                        "A training record has an invalid source revision id.",
+                        retryable=False,
+                        outcome_unknown=False,
+                    ) from exc
+                if source_id not in source_counts:
+                    raise StageExecutionFailure(
+                        "CATALYST_PLUGIN_OUTPUT_INVALID",
+                        "A training record references a source outside this curation run.",
+                        retryable=False,
+                        outcome_unknown=False,
+                    )
+                disposition = envelope.get("disposition")
+                if disposition not in {"eligible", "review", "excluded"}:
+                    raise StageExecutionFailure(
+                        "CATALYST_PLUGIN_OUTPUT_INVALID",
+                        "A training record has an invalid disposition.",
+                        retryable=False,
+                        outcome_unknown=False,
+                    )
+                normalized = envelope.get("normalized")
+                if disposition == "eligible" and not isinstance(normalized, dict):
+                    raise StageExecutionFailure(
+                        "CATALYST_PLUGIN_OUTPUT_INVALID",
+                        "A record without normalized content cannot be eligible for training.",
+                        retryable=False,
+                        outcome_unknown=False,
+                    )
+                allowed_by_policy = self._training_policy_allows(envelope.get("policy"))
+                if self._training_record_explicitly_denied(envelope.get("rawRecord")):
+                    allowed_by_policy = False
+                if disposition == "eligible" and not allowed_by_policy:
+                    raise StageExecutionFailure(
+                        "CATALYST_TRAINING_POLICY_VIOLATION",
+                        "A policy-disallowed training record was marked eligible by the Plugin.",
+                        retryable=False,
+                        outcome_unknown=False,
+                    )
+                if disposition != "excluded" and not allowed_by_policy:
+                    raise StageExecutionFailure(
+                        "CATALYST_TRAINING_POLICY_VIOLATION",
+                        "A policy-disallowed record must be excluded before human approval.",
+                        retryable=False,
+                        outcome_unknown=False,
+                    )
+                issues = envelope.get("issues", [])
+                if not isinstance(issues, list):
+                    raise StageExecutionFailure(
+                        "CATALYST_PLUGIN_OUTPUT_INVALID",
+                        "Training record issues must be a list.",
+                        retryable=False,
+                        outcome_unknown=False,
+                    )
+                if disposition == "eligible" and any(
+                    isinstance(issue, dict)
+                    and (
+                        issue.get("severity") == "error"
+                        or self._training_issue_requires_exclusion(issue)
+                    )
+                    for issue in issues
+                ):
+                    raise StageExecutionFailure(
+                        "CATALYST_PLUGIN_OUTPUT_INVALID",
+                        "A record with unresolved or unrepresentable issues cannot be eligible.",
+                        retryable=False,
+                        outcome_unknown=False,
+                    )
+                if disposition == "review" and not issues:
+                    raise StageExecutionFailure(
+                        "CATALYST_PLUGIN_OUTPUT_INVALID",
+                        "A pending-review training record must retain a specific issue.",
+                        retryable=False,
+                        outcome_unknown=False,
+                    )
+                row_counts = source_counts[source_id]
+                row_counts["total"] += 1
+                actual_counts["total"] += 1
+                detected_format = envelope.get("detectedFormat")
+                if detected_format not in {None, "unknown"}:
+                    row_counts["recognized"] += 1
+                    actual_counts["recognized"] += 1
+                row_counts[disposition if disposition != "review" else "pendingReview"] += 1
+                actual_counts[disposition if disposition != "review" else "pendingReview"] += 1
+                if source_id in selected_actual:
+                    selected_actual[source_id]["total"] += 1
+                    selected_actual[source_id][
+                        disposition if disposition != "review" else "pendingReview"
+                    ] += 1
+                    if detected_format not in {None, "unknown"}:
+                        selected_actual[source_id]["recognized"] += 1
+                for issue in issues:
+                    if not isinstance(issue, dict):
+                        raise StageExecutionFailure(
+                            "CATALYST_PLUGIN_OUTPUT_INVALID",
+                            "A training record issue is invalid.",
+                            retryable=False,
+                            outcome_unknown=False,
+                        )
+                    code = issue.get("code")
+                    message = issue.get("message")
+                    severity = issue.get("severity", "warning")
+                    if not isinstance(code, str) or not code or not isinstance(message, str):
+                        raise StageExecutionFailure(
+                            "CATALYST_PLUGIN_OUTPUT_INVALID",
+                            "A training record issue needs a code and message.",
+                            retryable=False,
+                            outcome_unknown=False,
+                        )
+                    if severity not in {"warning", "error"}:
+                        raise StageExecutionFailure(
+                            "CATALYST_PLUGIN_OUTPUT_INVALID",
+                            "A training issue severity must be warning or error.",
+                            retryable=False,
+                            outcome_unknown=False,
+                        )
+                    row_counts["reviewItems"] += 1
+                    if code.startswith("UNSUPPORTED_"):
+                        unsupported = unsupported_counts[source_id]
+                        unsupported[code] = unsupported.get(code, 0) + 1
+                for code in {str(issue["code"]) for issue in issues}:
+                    bucket = diagnostic_counts[source_id]
+                    bucket[code] = bucket.get(code, 0) + 1
+                if any(issue.get("code") == "DUPLICATE_EXACT" for issue in issues):
+                    row_counts["duplicateCandidates"] += 1
+                    actual_counts["duplicateCandidates"] += 1
+                    if source_id in selected_actual:
+                        selected_actual[source_id]["duplicateCandidates"] += 1
+                if any(
+                    issue.get("code")
+                    in {
+                        "INVALID_JSON",
+                        "training.invalid_json",
+                        "INVALID_ENCODING",
+                        "FORMAT_UNRECOGNIZED",
+                        "MESSAGE_STRUCTURE_INVALID",
+                        "FIELD_MISSING",
+                        "FIELD_TYPE_INVALID",
+                    }
+                    for issue in issues
+                ):
+                    row_counts["formatErrors"] += 1
+                    actual_counts["formatErrors"] += 1
+                    if source_id in selected_actual:
+                        selected_actual[source_id]["formatErrors"] += 1
+
+            aggregate_receipt_counts: dict[str, int] = {
+                key: 0
+                for key in (
+                    "total",
+                    "recognized",
+                    "formatErrors",
+                    "duplicateCandidates",
+                    "pendingReview",
+                    "excluded",
+                    "eligible",
+                )
+            }
+            for _, receipt in receipt_by_source.items():
+                reported = receipt.get("counts")
+                if not isinstance(reported, dict):
+                    raise StageExecutionFailure(
+                        "CATALYST_PLUGIN_RECEIPT_INVALID",
+                        "A curation source receipt has no count ledger.",
+                        retryable=False,
+                        outcome_unknown=False,
+                    )
+                for key in aggregate_receipt_counts:
+                    value = reported.get(key)
+                    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                        raise StageExecutionFailure(
+                            "CATALYST_PLUGIN_RECEIPT_INVALID",
+                            "A curation source count is invalid.",
+                            retryable=False,
+                            outcome_unknown=False,
+                        )
+                    aggregate_receipt_counts[key] += value
+
+            for source_id, actual in selected_actual.items():
+                reported = receipt_by_source[source_id].get("counts")
+                if not isinstance(reported, dict):
+                    raise StageExecutionFailure(
+                        "CATALYST_PLUGIN_RECEIPT_INVALID",
+                        "A curation source receipt has no count ledger.",
+                        retryable=False,
+                        outcome_unknown=False,
+                    )
+                for key in (
+                    "total",
+                    "recognized",
+                    "formatErrors",
+                    "duplicateCandidates",
+                    "eligible",
+                    "pendingReview",
+                    "excluded",
+                ):
+                    if reported.get(key) != actual[key]:
+                        raise StageExecutionFailure(
+                            "CATALYST_PLUGIN_RECEIPT_INVALID",
+                            "Curation source counts do not match its normalized record envelopes.",
+                            retryable=False,
+                            outcome_unknown=False,
+                        )
+
+                if reported["total"]:
+                    diagnostic_receipt = self._validated_histogram(
+                        receipt_by_source[source_id].get("diagnostic_counts", {}),
+                        "diagnostic_counts",
+                    )
+                    if diagnostic_receipt != diagnostic_counts[source_id]:
+                        raise StageExecutionFailure(
+                            "CATALYST_PLUGIN_RECEIPT_INVALID",
+                            "Curation diagnostic counts do not match the record envelopes.",
+                            retryable=False,
+                            outcome_unknown=False,
+                        )
+                    unsupported_receipt = self._validated_histogram(
+                        receipt_by_source[source_id].get("unsupported_counts", {}),
+                        "unsupported_counts",
+                    )
+                    if unsupported_receipt != unsupported_counts[source_id]:
+                        raise StageExecutionFailure(
+                            "CATALYST_PLUGIN_RECEIPT_INVALID",
+                            "Curation unsupported-content counts do not match the "
+                            "record envelopes.",
+                            retryable=False,
+                            outcome_unknown=False,
+                        )
+
+            reported_counts = response.get("counts")
+            if not isinstance(reported_counts, dict):
+                raise StageExecutionFailure(
+                    "CATALYST_PLUGIN_RECEIPT_INVALID",
+                    "The curation receipt has no count ledger.",
+                    retryable=False,
+                    outcome_unknown=False,
+                )
+            for key in (
+                "total",
+                "recognized",
+                "formatErrors",
+                "duplicateCandidates",
+                "pendingReview",
+                "excluded",
+                "eligible",
+            ):
+                if reported_counts.get(key) != aggregate_receipt_counts[key]:
+                    raise StageExecutionFailure(
+                        "CATALYST_PLUGIN_RECEIPT_INVALID",
+                        "Curation aggregate counts do not match the normalized record envelopes.",
+                        retryable=False,
+                        outcome_unknown=False,
+                    )
+
+            if not actual_counts["total"]:
+                raise StageExecutionFailure(
+                    "CATALYST_TRAINING_DATA_EMPTY",
+                    "The curation Plugin produced no record envelopes.",
+                    retryable=False,
+                    outcome_unknown=False,
+                )
+            if (
+                actual_counts["eligible"]
+                + actual_counts["pendingReview"]
+                + actual_counts["excluded"]
+                != actual_counts["total"]
+            ):
+                raise StageExecutionFailure(
+                    "CATALYST_PLUGIN_OUTPUT_INVALID",
+                    "Training-record dispositions do not reconcile to the artifact total.",
+                    retryable=False,
+                    outcome_unknown=False,
+                )
+            snapshot_ref = self.artifacts.publish(merged_path, "source-parse-blocks")
+            if merged_path != result_path:
+                merged_path.unlink(missing_ok=True)
+            counts = TrainingCurationCounts.model_validate(actual_counts)
+            snapshot_records = TrainingDataSnapshot(
+                schema_version="cyrene.training-record.v1",
+                artifact=snapshot_ref,
+                record_count=actual_counts["total"],
+                counts=counts,
+            )
+            final_source_ids = sorted(
+                (
+                    source_id
+                    for source_id, source_count in source_counts.items()
+                    if source_count["total"] > 0
+                ),
+                key=str,
+            )
+            revision = ContentRevision(
+                id=uuid4(),
+                dataset_id=run.dataset_id,
+                revision=(previous.revision + 1) if previous is not None else 1,
+                parent_revision_id=previous.id if previous is not None else None,
+                source_revision_ids=final_source_ids,
+                training_data_snapshot=snapshot_records,
+                state=ContentRevisionState.DRAFT,
+                created_at=utc_now(),
+                resource_version=1,
+            )
+            terminal_reports: list[SourceParseReport] = []
+            for source_id in selected_failed_ids:
+                if source_counts[source_id]["total"] > 0:
+                    continue
+                receipt = receipt_by_source[source_id]
+                diagnostic_histogram = self._validated_histogram(
+                    receipt.get("diagnostic_counts", {}), "diagnostic_counts"
+                )
+                unsupported_histogram = self._validated_histogram(
+                    receipt.get("unsupported_counts", {}), "unsupported_counts"
+                )
+                failed = report_by_source[source_id].model_copy(
+                    update={
+                        "status": SourceParseReportState.FAILED,
+                        "block_count": 0,
+                        "diagnostics": self._histogram_documents(
+                            diagnostic_histogram, "diagnostic"
+                        ),
+                        "unsupported_content": self._histogram_documents(
+                            unsupported_histogram, "unsupported"
+                        ),
+                        "diagnostic_counts": diagnostic_histogram,
+                        "output_artifacts": [source_by_id[source_id].artifact],
+                        "failure": ProcessingFailure(
+                            code="CATALYST_TRAINING_SOURCE_FAILED",
+                            message=str(
+                                receipt.get("failure")
+                                or "The source could not be normalized as training records."
+                            )[:2000],
+                            retryable=False,
+                        ),
+                        "finished_at": utc_now(),
+                        "updated_at": utc_now(),
+                    }
+                )
+                self.store.save_source_parse_report_for_worker(failed)
+                report_by_source[source_id] = failed
+            for source_id, report in report_by_source.items():
+                source_count = source_counts.get(source_id)
+                if source_count is None or source_count["total"] == 0:
+                    continue
+                has_issues = source_count["reviewItems"] > 0
+                receipt = receipt_by_source.get(source_id)
+                failed_source = receipt is not None and receipt.get("status") == "FAILED"
+                failure = None
+                if failed_source:
+                    failure_message = receipt.get("failure") if receipt is not None else None
+                    failure = ProcessingFailure(
+                        code="CATALYST_TRAINING_SOURCE_FAILED",
+                        message=str(
+                            failure_message
+                            or "The source could not be normalized as training records."
+                        )[:2000],
+                        retryable=False,
+                    )
+                terminal_reports.append(
+                    report.model_copy(
+                        update={
+                            "status": (
+                                SourceParseReportState.FAILED
+                                if failed_source
+                                else SourceParseReportState.WARNING
+                                if has_issues
+                                else SourceParseReportState.SUCCEEDED
+                            ),
+                            "content_revision_id": revision.id,
+                            "block_count": source_count["total"],
+                            "warnings": [],
+                            "diagnostics": self._histogram_documents(
+                                diagnostic_counts[source_id], "diagnostic"
+                            ),
+                            "unsupported_content": self._histogram_documents(
+                                unsupported_counts[source_id],
+                                "unsupported",
+                            ),
+                            "review_item_count": source_count["reviewItems"],
+                            "diagnostic_counts": diagnostic_counts[source_id],
+                            "output_artifacts": [snapshot_ref],
+                            "finished_at": utc_now(),
+                            "updated_at": utc_now(),
+                            "failure": failure,
+                        }
+                    )
+                )
+
+            def review_items() -> Any:
+                for envelope in self._iter_training_record_envelopes(
+                    merged_path if merged_path.exists() else self.artifacts.resolve(snapshot_ref)
+                ):
+                    try:
+                        source_id = UUID(str(envelope["sourceRevisionId"]))
+                    except (KeyError, ValueError) as exc:
+                        raise ValueError(
+                            "Training record lost its source lineage during finalization."
+                        ) from exc
+                    report = next(
+                        (item for item in terminal_reports if item.source_revision_id == source_id),
+                        None,
+                    )
+                    if report is None:
+                        continue
+                    record_id = envelope.get("id")
+                    if not isinstance(record_id, str) or not record_id:
+                        raise ValueError("Training record id is required for Review Queue linkage.")
+                    for index, issue in enumerate(envelope.get("issues", [])):
+                        code = str(issue["code"])
+                        severity = str(issue.get("severity", "warning"))
+                        yield ReviewItem(
+                            id=uuid5(
+                                _REVIEW_NAMESPACE,
+                                f"{run.id}:{record_id}:{code}:{index}",
+                            ),
+                            dataset_id=run.dataset_id,
+                            source_parse_report_id=report.id,
+                            source_revision_id=source_id,
+                            processing_run_id=run.id,
+                            content_revision_id=revision.id,
+                            kind=self._training_review_kind(code),
+                            code=code,
+                            message=str(issue["message"])[:2000],
+                            severity=severity,
+                            locator=self._training_record_locator(envelope.get("locator")),
+                            record_id=record_id,
+                        )
+
+            try:
+                saved = self.store.finalize_training_content_revision_for_worker(
+                    revision,
+                    terminal_reports,
+                    review_items(),
+                )
+            except (LookupError, ValueError) as exc:
+                raise StageExecutionFailure(
+                    "CATALYST_TRAINING_REVISION_CREATE_FAILED",
+                    "The Product could not atomically save the training snapshot and Review Queue.",
+                    retryable=False,
+                    outcome_unknown=False,
+                ) from exc
+            preserve_checkpoint_output = False
+            return {
+                "contentRevisionId": str(saved.id),
+                "trainingDataSnapshot": {
+                    "artifact": snapshot_ref.model_dump(by_alias=True, exclude_none=True),
+                    "recordCount": counts.total,
+                    "counts": counts.model_dump(by_alias=True, exclude_none=True),
+                },
+                "successfulSourceRevisionIds": [
+                    str(source_id)
+                    for source_id in final_source_ids
+                    if source_id not in selected_failed_ids
+                ],
+                "failedSourceRevisionIds": [
+                    str(source_id)
+                    for source_id in selected_failed_ids
+                    if source_counts[source_id]["total"] > 0
+                ],
+                "failedSourceCount": len(selected_failed_ids),
+                "outputArtifacts": [snapshot_ref.model_dump(by_alias=True, exclude_none=True)],
+                "pluginReceipt": {
+                    key: value for key, value in response.items() if key != "sources"
+                },
+            }
+        except StageExecutionFailure as exc:
+            fail_open_reports(exc.code, str(exc), exc.retryable)
+            raise
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError, KeyError) as exc:
+            fail_open_reports(
+                "CATALYST_TRAINING_CURATION_FAILED",
+                "The training data could not be safely normalized and persisted.",
+                False,
+            )
+            raise StageExecutionFailure(
+                "CATALYST_TRAINING_CURATION_FAILED",
+                "The training data could not be safely normalized and persisted.",
+                retryable=False,
+                outcome_unknown=False,
+            ) from exc
+        finally:
+            if not preserve_checkpoint_output:
+                result_path.unlink(missing_ok=True)
+                checkpoint_path.unlink(missing_ok=True)
+                checkpoint_path.with_name(checkpoint_path.name + ".dedup.sqlite3").unlink(
+                    missing_ok=True
+                )
+            if "merged_path" in locals() and merged_path != result_path:
+                merged_path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _training_review_kind(code: str) -> ReviewItemKind:
+        """Map stable Plugin issue codes into the existing review kind enum."""
+
+        normalized = code.upper()
+        if "DUPLICATE" in normalized:
+            return ReviewItemKind.TRAINING_DUPLICATE
+        if "LEAK" in normalized:
+            return ReviewItemKind.TRAINING_LEAKAGE
+        if any(value in normalized for value in ("UNSUPPORTED", "TOOL", "MULTIMODAL", "ROLE")):
+            return ReviewItemKind.TRAINING_UNSUPPORTED
+        if any(value in normalized for value in ("QUALITY", "SHORT", "LONG", "ORDER")):
+            return ReviewItemKind.TRAINING_QUALITY
+        return ReviewItemKind.TRAINING_STRUCTURE
+
+    @staticmethod
+    def _validated_histogram(value: Any, name: str) -> dict[str, int]:
+        """Validate a bounded Plugin diagnostic histogram before persistence."""
+
+        if not isinstance(value, dict) or len(value) > 1000:
+            raise ValueError(f"{name} must be a bounded diagnostic histogram.")
+        output: dict[str, int] = {}
+        for code, count in value.items():
+            if (
+                not isinstance(code, str)
+                or not code
+                or not isinstance(count, int)
+                or isinstance(count, bool)
+                or count < 0
+            ):
+                raise ValueError(f"{name} contains an invalid code or count.")
+            if count:
+                output[code] = count
+        return output
+
+    @classmethod
+    def _histogram_documents(cls, value: Any, name: str) -> list[dict[str, Any]]:
+        """Turn compact Plugin histograms into persisted diagnostic receipts."""
+
+        histogram = cls._validated_histogram(value, f"{name}_counts")
+        return [{"code": code, "count": count} for code, count in sorted(histogram.items())]
+
+    @staticmethod
+    def _training_record_locator(value: Any) -> ContentLocator | None:
+        """Project a plugin locator into the existing ReviewItem locator."""
+
+        if not isinstance(value, dict):
+            return None
+        item_ref = value.get("itemRef")
+        if not isinstance(item_ref, str):
+            return None
+        return ContentLocator(item_ref=item_ref)
+
+    @staticmethod
+    def _training_policy_allows(value: Any) -> bool:
+        """Require an explicit training grant on a normalized record."""
+
+        if not isinstance(value, dict):
+            return False
+        purposes = value.get("allowedUsePurposes", value.get("allowed_use_purposes", []))
+        return (
+            value.get("allowTraining", value.get("allow_training")) is True
+            and isinstance(purposes, list)
+            and "model_training" in purposes
+        )
+
+    @staticmethod
+    def _training_record_explicitly_denied(value: Any) -> bool:
+        """Honor per-record policy fields that narrow the inherited source grant."""
+
+        if not isinstance(value, dict):
+            return False
+        candidate = value.get("policy")
+        policy = candidate if isinstance(candidate, dict) else value
+        if policy.get("allowTraining", policy.get("allow_training")) is False:
+            return True
+        if policy.get("prohibited") is True or policy.get("banned") is True:
+            return True
+        purposes = policy.get("allowedUsePurposes", policy.get("allowed_use_purposes"))
+        return isinstance(purposes, list) and "model_training" not in purposes
+
+    @staticmethod
+    def _iter_training_record_envelopes(path: Path) -> Any:
+        """Yield validated JSONL envelopes with one bounded line in memory."""
+
+        if path.stat().st_size > MAX_RESULT_BYTES:
+            raise ValueError("Training record snapshot exceeds Catalyst's artifact size limit.")
+        with path.open("rb") as stream:
+            while True:
+                line = stream.readline(MAX_TRAINING_ROW_BYTES + 1)
+                if not line:
+                    return
+                if len(line) > MAX_TRAINING_ROW_BYTES:
+                    raise ValueError("Training record envelope exceeds the line size limit.")
+                try:
+                    value = json.loads(line)
+                except (UnicodeError, json.JSONDecodeError) as exc:
+                    raise ValueError("The curation Plugin produced invalid JSONL.") from exc
+                if (
+                    not isinstance(value, dict)
+                    or value.get("schemaVersion") != "cyrene.training-record.v1"
+                ):
+                    raise ValueError("The curation Plugin produced an invalid record envelope.")
+                yield value
 
     def _parse_one_source(
         self,
@@ -2853,30 +5264,97 @@ class DataToolsService:
                 retryable=False,
                 outcome_unknown=False,
             )
-        blocks_path = self.artifacts.stage_path(f"{uuid4()}.approved-blocks.json")
-        bundle_path = self.artifacts.stage_path(f"{uuid4()}.sft.zip")
-        result_path = self.artifacts.stage_path(f"{uuid4()}.sft-result.json")
+        artifact_backed = revision.training_data_snapshot is not None
+        blocks_path = (
+            None
+            if artifact_backed
+            else self.artifacts.stage_path(f"{uuid4()}.approved-blocks.json")
+        )
+        output_dir = (
+            self.artifacts.stage_dir(f"{uuid4()}.training-sft") if artifact_backed else None
+        )
+        bundle_path = (
+            output_dir / "bundle.zip"
+            if output_dir is not None
+            else self.artifacts.stage_path(f"{uuid4()}.sft.zip")
+        )
+        result_path = (
+            output_dir / "result.json"
+            if output_dir is not None
+            else self.artifacts.stage_path(f"{uuid4()}.sft-result.json")
+        )
         try:
-            self._write_approved_blocks(blocks_path, revision)
+            if blocks_path is not None:
+                self._write_approved_blocks(blocks_path, revision)
             split = run.recipe.get("config", {}).get("split")
             if split is None:
                 split = {"train": 0.8, "validation": 0.1, "test": 0.1}
-            response = self._invoke_plugin(
-                capability=_GENERATION_CAPABILITY,
-                environment_name=DATASET_GENERATION_CONNECTION_ENV,
-                method="prepare_sft",
-                request={
-                    "blocks_path": str(blocks_path.resolve()),
-                    "bundle_path": str(bundle_path.resolve()),
-                    "result_path": str(result_path.resolve()),
-                    "dataset_id": str(run.dataset_id),
-                    "content_revision_id": str(revision.id),
-                    "processing_run_id": str(run.id),
-                    "mode": run.recipe.get("config", {}).get("sftMode", "instruction"),
-                    "split": split,
-                },
-                cancel_event=cancel_event,
-            )
+            if artifact_backed:
+                assert revision.training_data_snapshot is not None and output_dir is not None
+                try:
+                    validated_counts = self._reconcile_training_snapshot(revision)
+                except (CatalystError, OSError, sqlite3.Error, ValueError) as exc:
+                    raise StageExecutionFailure(
+                        "CATALYST_TRAINING_SNAPSHOT_INVALID",
+                        "The approved training snapshot failed lineage or count verification.",
+                        retryable=False,
+                        outcome_unknown=False,
+                    ) from exc
+                if validated_counts.pending_review:
+                    raise StageExecutionFailure(
+                        "CATALYST_TRAINING_RECORDS_PENDING_REVIEW",
+                        "SFT export requires every training record to be approved or excluded.",
+                        retryable=False,
+                        outcome_unknown=False,
+                    )
+                split_request = {**split, "seed": split.get("seed", 42)}
+                output_format = run.recipe.get("config", {}).get("outputFormat", "sft")
+                response = self._invoke_plugin(
+                    capability=_GENERATION_CAPABILITY,
+                    environment_name=DATASET_GENERATION_CONNECTION_ENV,
+                    method="prepare_training_sft",
+                    request={
+                        "snapshot_path": str(
+                            self.artifacts.resolve(
+                                revision.training_data_snapshot.artifact
+                            ).resolve()
+                        ),
+                        "output_dir": str(output_dir.resolve()),
+                        "output_format": output_format,
+                        "recipe_digest": run.recipe_digest,
+                        "recipe_version": run.recipe_version,
+                        "split": split_request,
+                        "dataset_id": str(run.dataset_id),
+                        "content_revision_id": str(revision.id),
+                        "processing_run_id": str(run.id),
+                    },
+                    cancel_event=cancel_event,
+                )
+                if response.get("bundle_path") != str(bundle_path.resolve()):
+                    raise StageExecutionFailure(
+                        "CATALYST_PLUGIN_RECEIPT_INVALID",
+                        "The SFT exporter returned a bundle path outside its output directory.",
+                        retryable=False,
+                        outcome_unknown=False,
+                    )
+            else:
+                assert blocks_path is not None
+                response = self._invoke_plugin(
+                    capability=_GENERATION_CAPABILITY,
+                    environment_name=DATASET_GENERATION_CONNECTION_ENV,
+                    method="prepare_sft",
+                    request={
+                        "blocks_path": str(blocks_path.resolve()),
+                        "bundle_path": str(bundle_path.resolve()),
+                        "result_path": str(result_path.resolve()),
+                        "dataset_id": str(run.dataset_id),
+                        "content_revision_id": str(revision.id),
+                        "processing_run_id": str(run.id),
+                        "mode": run.recipe.get("config", {}).get("sftMode", "instruction"),
+                        "split": split,
+                    },
+                    cancel_event=cancel_event,
+                )
             _verify_file_receipt(
                 bundle_path,
                 response.get("bundle_digest"),
@@ -2909,8 +5387,11 @@ class DataToolsService:
                 )
             try:
                 with zipfile.ZipFile(bundle_path) as archive:
-                    names = set(archive.namelist())
-                    if names != allowed_files:
+                    member_names = archive.namelist()
+                    if (
+                        len(member_names) != len(set(member_names))
+                        or set(member_names) != allowed_files
+                    ):
                         raise ValueError("SFT package members do not match the receipt")
                     total_size = 0
                     for name in sorted(allowed_files):
@@ -2921,10 +5402,17 @@ class DataToolsService:
                         total_size += info.file_size
                         if total_size > MAX_RESULT_BYTES:
                             raise ValueError("SFT package files exceed the supported total size")
-                        data = archive.read(info)
-                        if _int_field(receipt.get("size_bytes"), f"{name}.size_bytes") != len(
-                            data
-                        ) or receipt.get("digest") != _digest_bytes(data):
+                        member_digest = hashlib.sha256()
+                        member_size = 0
+                        with archive.open(info) as member:
+                            while chunk := member.read(1024 * 1024):
+                                member_size += len(chunk)
+                                member_digest.update(chunk)
+                        if (
+                            _int_field(receipt.get("size_bytes"), f"{name}.size_bytes")
+                            != member_size
+                            or receipt.get("digest") != f"sha256:{member_digest.hexdigest()}"
+                        ):
                             raise ValueError(
                                 f"SFT package member {name} failed receipt verification"
                             )
@@ -2935,6 +5423,31 @@ class DataToolsService:
                     retryable=False,
                     outcome_unknown=False,
                 ) from exc
+            if artifact_backed:
+                try:
+                    self._verify_training_sft_export(
+                        bundle_path,
+                        files,
+                        response,
+                        run,
+                        revision,
+                        output_format,
+                        split_request,
+                    )
+                except (
+                    CatalystError,
+                    OSError,
+                    sqlite3.Error,
+                    UnicodeError,
+                    json.JSONDecodeError,
+                    ValueError,
+                ) as exc:
+                    raise StageExecutionFailure(
+                        "CATALYST_PLUGIN_OUTPUT_INVALID",
+                        "SFT split rows or provenance do not match the approved snapshot.",
+                        retryable=False,
+                        outcome_unknown=False,
+                    ) from exc
             result_document = self._read_result_document(result_path)
             if result_document != response:
                 raise StageExecutionFailure(
@@ -2977,7 +5490,10 @@ class DataToolsService:
             ) from exc
         finally:
             for staged in (blocks_path, bundle_path, result_path):
-                staged.unlink(missing_ok=True)
+                if staged is not None:
+                    staged.unlink(missing_ok=True)
+            if output_dir is not None:
+                shutil.rmtree(output_dir, ignore_errors=True)
 
     def _generate_qa(self, run: ProcessingRun, cancel_event: Any) -> dict[str, Any]:
         """Persist generated QA drafts as a new unapproved ContentRevision."""

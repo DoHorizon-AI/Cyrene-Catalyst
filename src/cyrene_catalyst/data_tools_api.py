@@ -32,6 +32,9 @@ from cyrene_catalyst.data_tools_domain import (
     SourceParseReport,
     SourceRevision,
 )
+from cyrene_catalyst.data_tools_domain import (
+    TrainingRecordsPage as TrainingRecordsPageModel,
+)
 from cyrene_catalyst.data_tools_service import (
     MAX_BATCH_REQUEST_BYTES,
     MAX_BATCH_SOURCE_BYTES,
@@ -45,6 +48,59 @@ from cyrene_catalyst.errors import CatalystError
 from cyrene_catalyst.logging import emit_diagnostic_error
 from cyrene_catalyst.trial_auth import trial_principal_from_request
 
+TrainingFieldPath = Annotated[str, Field(min_length=1, max_length=500)]
+
+
+class TrainingSplitConfig(ContractModel):
+    """Source-family split proportions for a reproducible SFT package."""
+
+    train: float = Field(gt=0, lt=1)
+    validation: float = Field(ge=0, lt=1)
+    test: float = Field(ge=0, lt=1)
+    seed: int | None = Field(default=None, ge=0)
+
+
+class GenerationBudgetConfig(ContractModel):
+    """Bounded generation request admitted by the existing QA recipe."""
+
+    max_examples: int = Field(ge=1)
+    max_calls: int = Field(ge=1)
+    max_input_tokens: int | None = Field(default=None, ge=1)
+    max_output_tokens: int | None = Field(default=None, ge=1)
+
+
+class TrainingCurationRecipeConfig(ContractModel):
+    """Versioned deterministic training-data curation recipe."""
+
+    id: str = Field(min_length=1, max_length=200)
+    version: str = Field(min_length=1, max_length=100)
+    format: Literal["auto", "alpaca", "promptCompletion", "messages", "sharegpt", "chatml"]
+    field_mapping: dict[str, TrainingFieldPath] = Field(default_factory=dict, max_length=100)
+    role_mapping: dict[str, Literal["system", "user", "assistant"]] = Field(
+        default_factory=dict,
+        max_length=100,
+    )
+    max_characters: int = Field(default=100_000, ge=1, le=10_000_000)
+    min_characters: int = Field(default=2, ge=0, le=10_000_000)
+    unicode_normalization: Literal["NFC", "NFD", "NFKC", "NFKD", "none"] = "NFC"
+
+    @model_validator(mode="after")
+    def require_valid_length_range(self) -> TrainingCurationRecipeConfig:
+        if self.min_characters > self.max_characters:
+            raise ValueError("minCharacters cannot exceed maxCharacters.")
+        return self
+
+
+class ProcessingRunConfig(ContractModel):
+    """Strict, additive configuration shared by existing durable operations."""
+
+    sft_mode: Literal["instruction", "conversation"] | None = None
+    output_format: Literal["sft", "messages", "promptCompletion"] | None = None
+    split: TrainingSplitConfig | None = None
+    generation: GenerationBudgetConfig | None = None
+    curation: TrainingCurationRecipeConfig | None = None
+    source_policies: dict[str, ContentPolicy] = Field(default_factory=dict, max_length=20)
+
 
 class CreateProcessingRunRequest(ContractModel):
     """Admit a named operation over selected Product-owned inputs."""
@@ -52,7 +108,29 @@ class CreateProcessingRunRequest(ContractModel):
     operation: ProcessingOperation
     source_revision_ids: list[UUID] | None = None
     content_revision_id: UUID | None = None
-    config: dict[str, Any] = Field(default_factory=dict)
+    config: ProcessingRunConfig = Field(default_factory=ProcessingRunConfig)
+
+    @model_validator(mode="after")
+    def validate_operation_inputs(self) -> CreateProcessingRunRequest:
+        if self.operation.value == "parse" and not self.source_revision_ids:
+            raise ValueError("Parse requires at least one sourceRevisionId.")
+        if self.operation.value == "curateTrainingData":
+            if not self.source_revision_ids:
+                raise ValueError("Training curation requires at least one sourceRevisionId.")
+            if self.config.curation is None:
+                raise ValueError("Training curation requires config.curation.")
+        if self.config.source_policies:
+            selected_sources = {str(source_id) for source_id in self.source_revision_ids or []}
+            if set(self.config.source_policies) - selected_sources:
+                raise ValueError("sourcePolicies keys must refer to selected sourceRevisionIds.")
+        if (
+            self.operation.value in {"buildKnowledge", "prepareSft", "generateQa"}
+            and self.content_revision_id is None
+        ):
+            raise ValueError(f"{self.operation.value} requires contentRevisionId.")
+        if self.operation.value == "generateQa" and self.config.generation is None:
+            raise ValueError("generateQa requires config.generation.")
+        return self
 
 
 class EditBlockRequest(ContractModel):
@@ -77,10 +155,10 @@ class ReviewContentRequest(ContractModel):
 
 
 class PublishDataToolsVersionRequest(ContractModel):
-    """Select the approved source snapshot and both successful profile runs."""
+    """Select an approved snapshot and its successful publication runs."""
 
     content_revision_id: UUID
-    knowledge_run_id: UUID
+    knowledge_run_id: UUID | None = None
     sft_run_id: UUID
 
 
@@ -140,6 +218,106 @@ class ReviewQueueResponse(ContractModel):
 
     items: list[ReviewItem]
     generated_drafts: list[GeneratedDraftSummary]
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=50, ge=1, le=200)
+    total: int = Field(default=0, ge=0)
+
+
+ReviewQueueKind = Literal[
+    "PARSER_WARNING",
+    "OCR_WARNING",
+    "PARSE_FAILURE",
+    "UNSUPPORTED_SOURCE",
+    "TRAINING_STRUCTURE",
+    "TRAINING_DUPLICATE",
+    "TRAINING_QUALITY",
+    "TRAINING_UNSUPPORTED",
+    "TRAINING_LEAKAGE",
+]
+
+
+class EditTrainingRecordRequest(ContractModel):
+    """One explicit human decision for an immutable training record."""
+
+    record_id: str = Field(min_length=1, max_length=300)
+    action: Literal["approve", "exclude", "remap"]
+    note: str | None = Field(default=None, max_length=2000)
+    format: (
+        Literal["auto", "alpaca", "promptCompletion", "messages", "sharegpt", "chatml"] | None
+    ) = None
+    field_mapping: dict[str, TrainingFieldPath] | None = Field(default=None, max_length=100)
+    role_mapping: dict[str, Literal["system", "user", "assistant"]] | None = Field(
+        default=None,
+        max_length=100,
+    )
+    raw_record: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def require_remap_content(self) -> EditTrainingRecordRequest:
+        if self.action == "remap" and not any(
+            value is not None
+            for value in (self.format, self.field_mapping, self.role_mapping, self.raw_record)
+        ):
+            raise ValueError("A remap edit must include a format, mapping, or corrected rawRecord.")
+        return self
+
+
+class EditTrainingRecordsRequest(ContractModel):
+    """Create a child revision from a bounded, optimistic batch of decisions."""
+
+    resource_version: int = Field(ge=1)
+    edits: list[EditTrainingRecordRequest] = Field(min_length=1, max_length=200)
+    note: str | None = Field(default=None, max_length=2000)
+
+    @model_validator(mode="after")
+    def reject_duplicate_record_edits(self) -> EditTrainingRecordsRequest:
+        ids = [edit.record_id for edit in self.edits]
+        if len(ids) != len(set(ids)):
+            raise ValueError("A record may appear only once in one edit batch.")
+        return self
+
+
+class TrainingRecordIssueResponse(ContractModel):
+    """One bounded normalization or review diagnostic on a source record."""
+
+    code: str = Field(min_length=1, max_length=200)
+    message: str = Field(min_length=1, max_length=2000)
+    severity: Literal["warning", "error"]
+
+
+class TrainingRecordEnvelopeResponse(ContractModel):
+    """Source-preserving record shown in the Review Queue and record browser."""
+
+    schema_version: Literal["cyrene.training-record.v1"]
+    id: str = Field(min_length=1, max_length=300)
+    sample_id: str = Field(min_length=1, max_length=500)
+    source_revision_id: UUID
+    source_family_id: str = Field(min_length=1, max_length=300)
+    conversation_id: str | None = Field(default=None, min_length=1, max_length=300)
+    ordinal: int = Field(ge=0)
+    locator: dict[str, Any]
+    raw_record: Any
+    raw_line: str | None
+    detected_format: Literal[
+        "alpaca", "promptCompletion", "messages", "sharegpt", "chatml", "unknown"
+    ]
+    normalized: dict[str, Any] | None
+    disposition: Literal["eligible", "review", "excluded"]
+    issues: list[TrainingRecordIssueResponse]
+    content_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    recipe_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    processing_history: list[dict[str, Any]]
+    policy: dict[str, Any]
+
+
+class TrainingRecordsPageResponse(ContractModel):
+    """Public bounded page of immutable training record envelopes."""
+
+    revision_id: UUID
+    offset: int = Field(ge=0)
+    limit: int = Field(ge=1, le=200)
+    total: int = Field(ge=0)
+    records: list[TrainingRecordEnvelopeResponse]
 
 
 class ResolveReviewItemRequest(ContractModel):
@@ -442,9 +620,20 @@ def build_data_tools_router(service: DataToolsService) -> APIRouter:
     def get_review_queue(
         dataset_id: Annotated[UUID, ApiPath(alias="datasetId")],
         request: Request,
+        kind: Annotated[ReviewQueueKind | None, Query()] = None,
+        code: Annotated[str | None, Query(min_length=1, max_length=200)] = None,
+        offset: Annotated[int, Query(ge=0)] = 0,
+        limit: Annotated[int, Query(ge=1, le=200)] = 50,
     ) -> ReviewQueueResponse:
         principal = trial_principal_from_request(request)
-        items = service.list_review_items(dataset_id, principal=principal)
+        page = service.list_review_items_page(
+            dataset_id,
+            kind=kind,
+            code=code,
+            offset=offset,
+            limit=limit,
+            principal=principal,
+        )
         generated_drafts = [
             GeneratedDraftSummary(
                 id=revision.id,
@@ -457,7 +646,13 @@ def build_data_tools_router(service: DataToolsService) -> APIRouter:
             )
             for revision, processing_run_id in service.list_generated_drafts(dataset_id, principal)
         ]
-        return ReviewQueueResponse(items=items, generated_drafts=generated_drafts)
+        return ReviewQueueResponse(
+            items=page.items,
+            generated_drafts=generated_drafts,
+            offset=page.offset,
+            limit=page.limit,
+            total=page.total,
+        )
 
     @router.post(
         "/api/v1/review-items/{reviewItemId}/resolve",
@@ -494,7 +689,7 @@ def build_data_tools_router(service: DataToolsService) -> APIRouter:
             operation=command.operation,
             source_revision_ids=command.source_revision_ids,
             content_revision_id=command.content_revision_id,
-            config=command.config,
+            config=command.config.model_dump(by_alias=True, exclude_none=True, exclude_unset=True),
             principal=trial_principal_from_request(request),
         )
         response.headers["Location"] = f"/api/v1/processing-runs/{run.id}"
@@ -569,6 +764,58 @@ def build_data_tools_router(service: DataToolsService) -> APIRouter:
             limit=limit,
             total=len(revision.blocks),
             blocks=revision.blocks[offset : offset + limit],
+        )
+
+    @router.get(
+        "/api/v1/content-revisions/{revisionId}/training-records",
+        operation_id="listTrainingRecords",
+        response_model=TrainingRecordsPageResponse,
+        response_model_exclude_none=True,
+    )
+    def get_training_records(
+        revision_id: Annotated[UUID, ApiPath(alias="revisionId")],
+        request: Request,
+        offset: Annotated[int, Query(ge=0)] = 0,
+        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+        disposition: Annotated[Literal["eligible", "review", "excluded"] | None, Query()] = None,
+        issue_code: Annotated[
+            str | None,
+            Query(alias="issueCode", min_length=1, max_length=200),
+        ] = None,
+    ) -> TrainingRecordsPageModel:
+        principal = trial_principal_from_request(request)
+        revision = service.get_content_revision(revision_id, principal)
+        return service.list_training_records(
+            dataset_id=revision.dataset_id,
+            revision_id=revision.id,
+            offset=offset,
+            limit=limit,
+            disposition=disposition,
+            issue_code=issue_code,
+            principal=principal,
+        )
+
+    @router.post(
+        "/api/v1/content-revisions/{revisionId}/training-records:edit",
+        operation_id="editTrainingRecords",
+        response_model=ContentRevision,
+        response_model_exclude_none=True,
+        status_code=201,
+    )
+    def edit_training_records(
+        revision_id: Annotated[UUID, ApiPath(alias="revisionId")],
+        command: EditTrainingRecordsRequest,
+        request: Request,
+    ) -> ContentRevision:
+        principal = trial_principal_from_request(request)
+        revision = service.get_content_revision(revision_id, principal)
+        return service.edit_training_records(
+            dataset_id=revision.dataset_id,
+            revision_id=revision.id,
+            resource_version=command.resource_version,
+            edits=[edit.model_dump(by_alias=True, exclude_none=True) for edit in command.edits],
+            note=command.note,
+            principal=principal,
         )
 
     @router.post(

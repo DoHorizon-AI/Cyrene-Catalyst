@@ -15,7 +15,7 @@ from enum import StrEnum
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
 
@@ -131,11 +131,19 @@ class DataToolsVersionProjection(ContractModel):
 
     content_revision_id: UUID
     source_revision_ids: list[UUID] = Field(default_factory=list)
-    knowledge_profile: Literal["CYRENE_KNOWLEDGE_BUNDLE_V1"] = "CYRENE_KNOWLEDGE_BUNDLE_V1"
-    knowledge_artifact: ArtifactRef
+    knowledge_profile: Literal["CYRENE_KNOWLEDGE_BUNDLE_V1"] | None = None
+    knowledge_artifact: ArtifactRef | None = None
     sft_profile: Literal["CYRENE_SFT_BUNDLE_V1"] = "CYRENE_SFT_BUNDLE_V1"
     sft_artifact: ArtifactRef
     stale: bool = False
+
+    @model_validator(mode="after")
+    def validate_knowledge_pair(self) -> DataToolsVersionProjection:
+        """Keep optional SFT-only publications free of partial knowledge refs."""
+
+        if (self.knowledge_profile is None) != (self.knowledge_artifact is None):
+            raise ValueError("Knowledge profile and artifact must be present together.")
+        return self
 
 
 class DatasetVersion(ContractModel):

@@ -317,6 +317,11 @@ def test_product_boundary_guard_allows_non_artifact_kind_enums() -> None:
         "OCR_WARNING",
         "PARSE_FAILURE",
         "UNSUPPORTED_SOURCE",
+        "TRAINING_STRUCTURE",
+        "TRAINING_DUPLICATE",
+        "TRAINING_QUALITY",
+        "TRAINING_UNSUPPORTED",
+        "TRAINING_LEAKAGE",
     ]
 
     result = subprocess.run(

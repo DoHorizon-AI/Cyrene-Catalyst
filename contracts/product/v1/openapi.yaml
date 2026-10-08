@@ -262,9 +262,27 @@ paths:
     get:
       operationId: getDatasetReviewQueue
       description: >-
-        Return persisted parser/OCR review items and summary projections of
-        generated DRAFT ContentRevisions. ContentRevision remains the review
-        authority for generated drafts.
+        Return persisted parser/OCR/training-data review items and summary
+        projections of generated DRAFT ContentRevisions. ContentRevision
+        remains the review authority for generated drafts. Filters apply to
+        issue items; generated draft summaries remain available in the response.
+      parameters:
+        - name: kind
+          in: query
+          required: false
+          schema: {type: string, enum: [PARSER_WARNING, OCR_WARNING, PARSE_FAILURE, UNSUPPORTED_SOURCE, TRAINING_STRUCTURE, TRAINING_DUPLICATE, TRAINING_QUALITY, TRAINING_UNSUPPORTED, TRAINING_LEAKAGE]}
+        - name: code
+          in: query
+          required: false
+          schema: {type: string, minLength: 1, maxLength: 200}
+        - name: offset
+          in: query
+          required: false
+          schema: {type: integer, minimum: 0, default: 0}
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 200, default: 50}
       responses:
         '200':
           description: Review items and generated draft summaries
@@ -281,8 +299,11 @@ paths:
     post:
       operationId: resolveReviewItem
       description: >-
-        ACKNOWLEDGE clears the bound parser/OCR approval blocker. REJECT records
-        the disposition and continues to block the bound revision.
+        ACKNOWLEDGE records that a human saw a parser, OCR, or training-data
+        warning. It does not approve a training record or make an invalid record
+        publishable; use the training-record edit endpoint to approve a valid
+        correction or exclude the record. REJECT continues to block the bound
+        revision.
       requestBody:
         required: true
         content:
@@ -321,6 +342,67 @@ paths:
             application/json:
               schema: {$ref: './data-tools.schema.json#/$defs/ContentBlockPage'}
         '404': {$ref: '#/components/responses/Problem'}
+  /api/v1/content-revisions/{revisionId}/training-records:
+    parameters:
+      - name: revisionId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    get:
+      operationId: listTrainingRecords
+      description: >-
+        Read a bounded page of source-preserving normalized records from the
+        immutable curation snapshot. Optional filters are conjunctive.
+      parameters:
+        - name: offset
+          in: query
+          required: false
+          schema: {type: integer, minimum: 0, default: 0}
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+        - name: disposition
+          in: query
+          required: false
+          schema: {type: string, enum: [eligible, review, excluded]}
+        - name: issueCode
+          in: query
+          required: false
+          schema: {type: string, minLength: 1, maxLength: 200}
+      responses:
+        '200':
+          description: Page of records with raw values, normalized messages and lineage
+          content:
+            application/json:
+              schema: {$ref: './data-tools.schema.json#/$defs/TrainingRecordsPage'}
+        '404': {$ref: '#/components/responses/Problem'}
+  /api/v1/content-revisions/{revisionId}/training-records:edit:
+    parameters:
+      - name: revisionId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      operationId: editTrainingRecords
+      description: >-
+        Apply bounded human decisions and create a new immutable content
+        revision. Acknowledging a queue issue never approves or enables invalid
+        training records.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: './data-tools.schema.json#/$defs/EditTrainingRecordsRequest'}
+      responses:
+        '201':
+          description: Child ContentRevision with updated record snapshot
+          content:
+            application/json:
+              schema: {$ref: './data-tools.schema.json#/$defs/ContentRevision'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
   /api/v1/content-revisions/{revisionId}/blocks/{blockId}/edits:
     parameters:
       - name: revisionId
@@ -393,7 +475,7 @@ paths:
             schema: {$ref: './data-tools.schema.json#/$defs/PublishDataToolsVersionRequest'}
       responses:
         '201':
-          description: Single immutable DatasetVersion with both package refs
+          description: Single immutable DatasetVersion with the selected SFT package and optional Knowledge package for curation-only publication
           content:
             application/json:
               schema: {$ref: './dataset-version.schema.json'}

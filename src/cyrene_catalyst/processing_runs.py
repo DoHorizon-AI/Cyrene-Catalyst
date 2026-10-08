@@ -290,7 +290,10 @@ class ProcessingRunCoordinator:
                     "resource_version": run.resource_version + 1,
                 }
             )
-            if run.operation == ProcessingOperation.PARSE:
+            if run.operation in {
+                ProcessingOperation.PARSE,
+                ProcessingOperation.CURATE_TRAINING_DATA,
+            }:
                 self.store.mark_parse_reports_interrupted_for_worker(run.id, now)
             self.store.save_run_for_worker(recovered)
         for run_id in queued:
