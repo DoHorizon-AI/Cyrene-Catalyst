@@ -92,9 +92,10 @@ uv run python scripts/accept_training_curation_medium.py --output-directory /tmp
 For an installed Catalyst service, the release includes a separate external
 consumer. Run it from the installed package; it uses only the Product HTTP API
 and the packaged 28-record authored fixture. It never starts or serves a Plugin.
-The installer must configure the supervised `dataset.preparation.v1`
-`connection_ref`; capability configuration is checked first, then real curation
-and SFT requests verify that the service can use it. Set
+The installer must configure the supervised `dataset.preparation.v1` and
+`dataset.generation.v1` `connection_ref` values before running the consumer;
+capability configuration is checked before any dataset is created, then real
+curation and SFT requests verify that the service can use both. Set
 `CYRENE_DATA_TOOLS_CLIENT_TOKEN` in the consumer process when the service
 requires a bearer token:
 
@@ -112,8 +113,9 @@ Python package, so the installer does not need a repository checkout.
 
 针对已安装的 Catalyst 服务，正式发行包提供独立的外部消费脚本。它只调用 Product HTTP API
 并读取随包分发的 28 条作者编写夹具，不会启动或托管 Plugin。安装器必须为受监管的
-`dataset.preparation.v1` 设置 `connection_ref`；脚本先检查 capability 配置，然后通过真实
-curation 和 SFT 请求验证服务能否使用该连接。服务要求 Bearer token 时，在消费进程中设置
+`dataset.preparation.v1` 和 `dataset.generation.v1` 设置 `connection_ref`；脚本在创建 Dataset 前先
+检查两项 capability 配置，然后通过真实 curation 和 SFT 请求验证服务能否使用两项连接。服务要求
+Bearer token 时，在消费进程中设置
 `CYRENE_DATA_TOOLS_CLIENT_TOKEN`。运行上方两个发行包命令即可完成验收并独立检查导出的训练包。
 该脚本会创建专用验收 Dataset 并保留审计记录，夹具和独立验证器均随 Python 发行包交付，安装器无需
 克隆源码仓库。

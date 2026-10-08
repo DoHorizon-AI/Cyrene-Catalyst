@@ -17,6 +17,25 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+_CONTENT_FILES = {
+    "train.jsonl",
+    "validation.jsonl",
+    "test.jsonl",
+    "provenance.jsonl",
+}
+_BUNDLE_MEMBERS = _CONTENT_FILES | {"manifest.json"}
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject duplicate JSON keys before they can hide a receipt. | 拒绝重复键。"""
+
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"Duplicate JSON object key: {key}")
+        value[key] = item
+    return value
+
 
 def learned_messages(row: dict[str, Any], output_format: str) -> list[dict[str, str]]:
     """Validate a learned row and reconstruct all message turns. | 校验并还原全部轮次。"""
@@ -95,19 +114,59 @@ def verify_bundle(bundle_path: Path, forbidden_text: str = "") -> dict[str, Any]
             "PRIMARY KEY(kind, identity))"
         )
         with zipfile.ZipFile(bundle_path) as bundle:
-            manifest = json.loads(bundle.read("manifest.json"))
+            members = bundle.infolist()
+            member_names = [member.filename for member in members]
+            if len(member_names) != len(set(member_names)):
+                raise ValueError("SFT bundle contains duplicate ZIP members.")
+            if set(member_names) != _BUNDLE_MEMBERS or any(member.is_dir() for member in members):
+                raise ValueError("SFT bundle members do not match the required package layout.")
+            manifest_info = bundle.getinfo("manifest.json")
+            if manifest_info.file_size > 2 * 1024 * 1024:
+                raise ValueError("SFT manifest exceeds the supported size limit.")
+            manifest = json.loads(
+                bundle.read(manifest_info).decode("utf-8", "strict"),
+                object_pairs_hook=_unique_json_object,
+            )
+            if not isinstance(manifest, dict):
+                raise ValueError("SFT manifest must be an object.")
             output_format = manifest.get("output_format", manifest.get("mode", "sft"))
-            for filename, receipt in manifest["files"].items():
+            if not isinstance(output_format, str) or not output_format:
+                raise ValueError("SFT manifest output format must be a nonempty string.")
+            files = manifest.get("files")
+            if not isinstance(files, dict) or set(files) != _CONTENT_FILES:
+                raise ValueError(
+                    "SFT manifest file table does not match the required content files."
+                )
+            receipt_rows: dict[str, int] = {}
+            for filename in sorted(_CONTENT_FILES):
+                receipt = files[filename]
+                if not isinstance(receipt, dict):
+                    raise ValueError(f"File receipt must be an object: {filename}")
+                expected_size = receipt.get("size_bytes")
+                expected_rows = receipt.get("row_count")
+                if (
+                    isinstance(expected_size, bool)
+                    or not isinstance(expected_size, int)
+                    or expected_size < 0
+                ):
+                    raise ValueError(f"File size receipt is invalid: {filename}")
+                if (
+                    isinstance(expected_rows, bool)
+                    or not isinstance(expected_rows, int)
+                    or expected_rows < 0
+                ):
+                    raise ValueError(f"File row-count receipt is invalid: {filename}")
+                receipt_rows[filename] = expected_rows
                 digest = hashlib.sha256()
                 size = 0
-                with bundle.open(filename) as stream:
+                with bundle.open(bundle.getinfo(filename)) as stream:
                     for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                         digest.update(chunk)
                         size += len(chunk)
                 expected_digest = receipt.get("digest", receipt.get("sha256"))
                 if expected_digest != "sha256:" + digest.hexdigest():
                     raise ValueError(f"File digest mismatch: {filename}")
-                if size != receipt["size_bytes"]:
+                if size != expected_size:
                     raise ValueError(f"File size mismatch: {filename}")
             for split in ("train", "validation", "test"):
                 count = 0
@@ -120,14 +179,19 @@ def verify_bundle(bundle_path: Path, forbidden_text: str = "") -> dict[str, Any]
                         total_messages += len(messages)
                         count += 1
                 split_counts[split] = count
-                if manifest["files"][f"{split}.jsonl"]["row_count"] != count:
+                filename = f"{split}.jsonl"
+                if receipt_rows[filename] != count:
                     raise ValueError("Manifest learned row count does not reconcile.")
             provenance_count = 0
             provenance_split_counts = dict.fromkeys(split_counts, 0)
             with bundle.open("provenance.jsonl") as stream:
                 for line in stream:
                     record = json.loads(line)
+                    if not isinstance(record, dict):
+                        raise ValueError("Provenance rows must be JSON objects.")
                     split = record["split"]
+                    if split not in provenance_split_counts:
+                        raise ValueError("Provenance row has an unknown split.")
                     provenance_split_counts[split] += 1
                     for kind in ("source_family_id", "conversation_id", "content_digest"):
                         identity = record.get(kind)
@@ -147,6 +211,8 @@ def verify_bundle(bundle_path: Path, forbidden_text: str = "") -> dict[str, Any]
                 raise ValueError("Provenance and learned rows do not reconcile by split.")
             if provenance_count != sum(split_counts.values()):
                 raise ValueError("Provenance and learned total counts do not reconcile.")
+            if receipt_rows["provenance.jsonl"] != provenance_count:
+                raise ValueError("Provenance row count does not match its file receipt.")
             return {
                 "status": "PASS",
                 "outputFormat": output_format,

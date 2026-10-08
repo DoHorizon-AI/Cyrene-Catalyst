@@ -146,9 +146,9 @@ def _wait_for_run(client: httpx.Client, run_id: str, timeout: float = 180.0) -> 
 
 
 def _capability_preflight(client: httpx.Client) -> dict[str, Any]:
-    """Require configured preparation but do not treat it as activation proof.
+    """Require preparation and generation before service mutation.
 
-    中文：要求 preparation 已配置，但不把配置状态视作激活证明。
+    中文：在修改服务前要求 preparation 与 generation 均已配置。
     """
 
     report = cast(dict[str, Any], _request(client, "GET", "/api/v1/system/capabilities"))
@@ -159,21 +159,25 @@ def _capability_preflight(client: httpx.Client) -> dict[str, Any]:
         raise AcceptanceFailure(
             "The capability endpoint must explicitly report configuration only."
         )
-    preparation = next(
-        (
-            capability
-            for capability in report["capabilities"]
-            if capability["id"] == "dataset.preparation.v1"
-        ),
-        None,
-    )
-    if preparation is None or preparation.get("supported") is not True:
-        raise AcceptanceFailure(
-            "The installed Product does not declare dataset.preparation.v1 support."
+    capabilities = report.get("capabilities")
+    if not isinstance(capabilities, list):
+        raise AcceptanceFailure("The capability endpoint did not return a capability list.")
+    for capability_id in ("dataset.preparation.v1", "dataset.generation.v1"):
+        capability = next(
+            (
+                item
+                for item in capabilities
+                if isinstance(item, dict) and item.get("id") == capability_id
+            ),
+            None,
         )
-    if preparation.get("configured") is not True:
-        environment = preparation.get("configurationEnvironmentVariable", "connection_ref")
-        raise AcceptanceFailure(f"The installer did not configure {environment}.")
+        if capability is None or capability.get("supported") is not True:
+            raise AcceptanceFailure(
+                f"The installed Product does not declare {capability_id} support."
+            )
+        if capability.get("configured") is not True:
+            environment = capability.get("configurationEnvironmentVariable", "connection_ref")
+            raise AcceptanceFailure(f"The installer did not configure {environment}.")
     return report
 
 
