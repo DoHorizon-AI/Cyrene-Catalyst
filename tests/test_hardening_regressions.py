@@ -1,13 +1,12 @@
 """Regression tests for Catalyst hardening (Phase 1, Catalyst #5)."""
 
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 
 from cyrene_catalyst import create_app
 from cyrene_catalyst.domain import (
-    ArtifactRef,
     CreateDatasetRequest,
     ImportFormat,
     Preparation,
@@ -44,7 +43,9 @@ def test_state_invariant_explicit_exception_without_assert(tmp_path: Path) -> No
     service = app.state.catalyst_service
     dataset = service.create_dataset(CreateDatasetRequest(name="inv-test"), idempotency_key=None)
     now = utc_now()
-    source_ref = service.artifacts.ingest_bytes(b'{"instruction": "x", "output": "y"}\n', "source.jsonl")
+    source_ref = service.artifacts.ingest_bytes(
+        b'{"instruction": "x", "output": "y"}\n', "source.jsonl"
+    )
     prep = Preparation(
         id=uuid4(),
         dataset_id=dataset.id,
