@@ -6,6 +6,7 @@ Data ingestion, cleaning, transformation, structuring, and Dataset creation serv
 
 ## Authoritative Documentation & Contracts
 - **Product API & Pipeline Specification**: [`docs/API.md`](docs/API.md)
+- **Training data curation workflow**: [`docs/TRAINING-DATA-CURATION.md`](docs/TRAINING-DATA-CURATION.md)
 - **Repository Lifecycle & Boundaries**: [`docs/REPOSITORY-LIFECYCLE.md`](docs/REPOSITORY-LIFECYCLE.md)
 - **Plugin Dependencies**: [`PLUGIN_DEPENDENCIES.md`](PLUGIN_DEPENDENCIES.md)
 - **Dependency and SBOM Record**: [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md)

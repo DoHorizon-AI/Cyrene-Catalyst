@@ -11,6 +11,15 @@ normalization, deduplication, grouping, transformation, and split algorithms.
 Missing bindings fail closed; no Product-local processing implementation is
 selected as a replacement preparation provider.
 
+Training curation uses the existing `dataset.preparation.v1.curate_training_records`
+and `remap_training_record` methods. Reviewed export uses
+`dataset.generation.v1.prepare_training_sft`. Development acceptance pins both
+owner Plugins and their model-provider codec package to the immutable source
+revision in `uv.lock`; no model is called during deterministic cleaning.
+
+训练数据整理和映射复用 preparation 插件；审核后转换复用 generation 插件。
+验收依赖锁定到可追踪的 Plugins 源码修订。确定性清洗不调用模型改写答案。
+
 The pinned Plugin reads JSON/JSONL/text/CSV/Parquet sources and writes the
 verified JSONL/CSV/Parquet export bundle. Catalyst validates the Plugin result
 and file receipts, publishes immutable ArtifactRefs, and never imports DuckDB
