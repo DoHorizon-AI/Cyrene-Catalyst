@@ -12,6 +12,20 @@ info:
 servers:
   - url: /
 paths:
+  /api/v1/system/capabilities:
+    get:
+      operationId: getProductCapabilityConfiguration
+      description: >-
+        Reports statically supported Plugin contracts and whether each opaque
+        connection_ref environment variable is configured. This is a
+        configuration-only view and does not verify endpoint reachability or
+        Plugin activation. Raw connection_ref values are never returned.
+      responses:
+        '200':
+          description: Supported capability configuration
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProductCapabilityReport'}
   /api/v1/datasets:
     get:
       operationId: listDatasets
@@ -52,6 +66,456 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Dataset'}
         '404': {$ref: '#/components/responses/Problem'}
+  /api/v1/datasets/{datasetId}/sources:
+    parameters:
+      - $ref: '#/components/parameters/DatasetId'
+    get:
+      operationId: listSourceRevisions
+      responses:
+        '200':
+          description: Immutable source revisions, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: './data-tools.schema.json#/$defs/SourceRevision'}
+        '404': {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: uploadSourceRevision
+      parameters:
+        - name: filename
+          in: query
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 300}
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream: {schema: {type: string, format: binary}}
+          application/pdf: {schema: {type: string, format: binary}}
+          application/vnd.openxmlformats-officedocument.wordprocessingml.document: {schema: {type: string, format: binary}}
+          application/jsonl: {schema: {type: string, format: binary}}
+          application/json: {schema: {type: string, format: binary}}
+          text/csv: {schema: {type: string, format: binary}}
+          application/vnd.apache.parquet: {schema: {type: string, format: binary}}
+      responses:
+        '201':
+          description: Original bytes staged as a new SourceRevision
+          content:
+            application/json:
+              schema: {$ref: './data-tools.schema.json#/$defs/SourceRevision'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+  /api/v1/datasets/{datasetId}/sources/batch:
+    parameters:
+      - $ref: '#/components/parameters/DatasetId'
+    post:
+      operationId: uploadSourceRevisionsBatch
+      description: >-
+        Store original file bytes independently without starting parse. Repeat
+        the multipart part named `files[]` once per file. At most 20 files are
+        accepted, each at most 32 MiB, with 128 MiB aggregate stored bytes and
+        a 129 MiB complete request limit including multipart overhead. Per-file
+        failures are returned in the corresponding response item.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: ['files[]']
+              properties:
+                'files[]':
+                  type: array
+                  minItems: 1
+                  maxItems: 20
+                  items: {type: string, format: binary}
+              additionalProperties: false
+            encoding:
+              'files[]':
+                style: form
+                explode: true
+      responses:
+        '200':
+          description: Independent upload outcomes for each submitted file
+          content:
+            application/json:
+              schema: {$ref: './data-tools.schema.json#/$defs/BatchSourceUploadResponse'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+  /api/v1/datasets/{datasetId}/processing-runs:
+    parameters:
+      - $ref: '#/components/parameters/DatasetId'
+    get:
+      operationId: listProcessingRuns
+      responses:
+        '200':
+          description: Processing runs, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: './data-tools.schema.json#/$defs/ProcessingRun'}
+        '404': {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: createProcessingRun
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: './data-tools.schema.json#/$defs/CreateProcessingRunRequest'}
+      responses:
+        '202':
+          description: Durable asynchronous Product run accepted
+          headers:
+            Location:
+              required: true
+              schema: {type: string, format: uri-reference}
+          content:
+            application/json:
+              schema: {$ref: './data-tools.schema.json#/$defs/ProcessingRun'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+  /api/v1/processing-runs/{runId}:
+    parameters:
+      - name: runId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    get:
+      operationId: getProcessingRun
+      responses:
+        '200':
+          description: Current durable run projection
+          content:
+            application/json:
+              schema: {$ref: './data-tools.schema.json#/$defs/ProcessingRun'}
+        '404': {$ref: '#/components/responses/Problem'}
+  /api/v1/processing-runs/{runId}/cancel:
+    parameters:
+      - name: runId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      operationId: cancelProcessingRun
+      responses:
+        '200':
+          description: Cancellation requested or terminal run returned
+          content:
+            application/json:
+              schema: {$ref: './data-tools.schema.json#/$defs/ProcessingRun'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+  /api/v1/processing-runs/{runId}/retry:
+    parameters:
+      - name: runId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      operationId: retryProcessingRun
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: New Product run linked to the prior run
+          content:
+            application/json:
+              schema: {$ref: './data-tools.schema.json#/$defs/ProcessingRun'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+  /api/v1/datasets/{datasetId}/content-revisions:
+    parameters:
+      - $ref: '#/components/parameters/DatasetId'
+    get:
+      operationId: listContentRevisions
+      responses:
+        '200':
+          description: Immutable content revisions, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: './data-tools.schema.json#/$defs/ContentRevision'}
+        '404': {$ref: '#/components/responses/Problem'}
+  /api/v1/datasets/{datasetId}/source-parse-reports:
+    parameters:
+      - $ref: '#/components/parameters/DatasetId'
+    get:
+      operationId: listSourceParseReports
+      description: >-
+        Return one durable parse report per processing run and SourceRevision.
+        Optional filters are conjunctive and never change SourceRevision.
+      parameters:
+        - name: sourceRevisionId
+          in: query
+          required: false
+          schema: {type: string, format: uuid}
+        - name: processingRunId
+          in: query
+          required: false
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Per-source parsing reports, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: './data-tools.schema.json#/$defs/SourceParseReport'}
+        '404': {$ref: '#/components/responses/Problem'}
+  /api/v1/datasets/{datasetId}/review-queue:
+    parameters:
+      - $ref: '#/components/parameters/DatasetId'
+    get:
+      operationId: getDatasetReviewQueue
+      description: >-
+        Return persisted parser/OCR/training-data review items and summary
+        projections of generated DRAFT ContentRevisions. ContentRevision
+        remains the review authority for generated drafts. Filters apply to
+        issue items; generated draft summaries remain available in the response.
+      parameters:
+        - name: kind
+          in: query
+          required: false
+          schema: {type: string, enum: [PARSER_WARNING, OCR_WARNING, PARSE_FAILURE, UNSUPPORTED_SOURCE, TRAINING_STRUCTURE, TRAINING_DUPLICATE, TRAINING_QUALITY, TRAINING_UNSUPPORTED, TRAINING_LEAKAGE]}
+        - name: code
+          in: query
+          required: false
+          schema: {type: string, minLength: 1, maxLength: 200}
+        - name: offset
+          in: query
+          required: false
+          schema: {type: integer, minimum: 0, default: 0}
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+      responses:
+        '200':
+          description: Review items and generated draft summaries
+          content:
+            application/json:
+              schema: {$ref: './data-tools.schema.json#/$defs/ReviewQueueResponse'}
+        '404': {$ref: '#/components/responses/Problem'}
+  /api/v1/review-items/{reviewItemId}/resolve:
+    parameters:
+      - name: reviewItemId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      operationId: resolveReviewItem
+      description: >-
+        ACKNOWLEDGE records that a human saw a parser, OCR, or training-data
+        warning. It does not approve a training record or make an invalid record
+        publishable; use the training-record edit endpoint to approve a valid
+        correction or exclude the record. REJECT continues to block the bound
+        revision.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: './data-tools.schema.json#/$defs/ResolveReviewItemRequest'}
+      responses:
+        '200':
+          description: Updated review item
+          content:
+            application/json:
+              schema: {$ref: './data-tools.schema.json#/$defs/ReviewItem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+  /api/v1/content-revisions/{revisionId}/blocks:
+    parameters:
+      - name: revisionId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    get:
+      operationId: listContentRevisionBlocks
+      parameters:
+        - name: offset
+          in: query
+          required: false
+          schema: {type: integer, minimum: 0, default: 0}
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 200, default: 100}
+      responses:
+        '200':
+          description: Paginated immutable content blocks
+          content:
+            application/json:
+              schema: {$ref: './data-tools.schema.json#/$defs/ContentBlockPage'}
+        '404': {$ref: '#/components/responses/Problem'}
+  /api/v1/content-revisions/{revisionId}/training-records:
+    parameters:
+      - name: revisionId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    get:
+      operationId: listTrainingRecords
+      description: >-
+        Read a bounded page of source-preserving normalized records from the
+        immutable curation snapshot. Optional filters are conjunctive.
+      parameters:
+        - name: offset
+          in: query
+          required: false
+          schema: {type: integer, minimum: 0, default: 0}
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+        - name: disposition
+          in: query
+          required: false
+          schema: {type: string, enum: [eligible, review, excluded]}
+        - name: issueCode
+          in: query
+          required: false
+          schema: {type: string, minLength: 1, maxLength: 200}
+      responses:
+        '200':
+          description: Page of records with raw values, normalized messages and lineage
+          content:
+            application/json:
+              schema: {$ref: './data-tools.schema.json#/$defs/TrainingRecordsPage'}
+        '404': {$ref: '#/components/responses/Problem'}
+  /api/v1/content-revisions/{revisionId}/training-records:edit:
+    parameters:
+      - name: revisionId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      operationId: editTrainingRecords
+      description: >-
+        Apply bounded human decisions and create a new immutable content
+        revision. Acknowledging a queue issue never approves or enables invalid
+        training records.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: './data-tools.schema.json#/$defs/EditTrainingRecordsRequest'}
+      responses:
+        '201':
+          description: Child ContentRevision with updated record snapshot
+          content:
+            application/json:
+              schema: {$ref: './data-tools.schema.json#/$defs/ContentRevision'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+  /api/v1/content-revisions/{revisionId}/blocks/{blockId}/edits:
+    parameters:
+      - name: revisionId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+      - name: blockId
+        in: path
+        required: true
+        schema: {type: string, minLength: 1, maxLength: 300}
+    post:
+      operationId: editContentBlock
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: './data-tools.schema.json#/$defs/EditBlockRequest'}
+      responses:
+        '201':
+          description: New immutable content revision
+          content:
+            application/json:
+              schema: {$ref: './data-tools.schema.json#/$defs/ContentRevision'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+  /api/v1/content-revisions/{revisionId}/review:
+    parameters:
+      - name: revisionId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      operationId: reviewContentRevision
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: './data-tools.schema.json#/$defs/ReviewContentRequest'}
+      responses:
+        '200':
+          description: Revision review decision
+          content:
+            application/json:
+              schema: {$ref: './data-tools.schema.json#/$defs/ContentRevision'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+  /api/v1/datasets/{datasetId}/data-tools/versions:
+    parameters:
+      - $ref: '#/components/parameters/DatasetId'
+    get:
+      operationId: listDataToolsVersions
+      responses:
+        '200':
+          description: DatasetVersions that carry both data-tools packages
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: './dataset-version.schema.json'}
+        '404': {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: publishDataToolsVersion
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: './data-tools.schema.json#/$defs/PublishDataToolsVersionRequest'}
+      responses:
+        '201':
+          description: Single immutable DatasetVersion with the selected SFT package and optional Knowledge package for curation-only publication
+          content:
+            application/json:
+              schema: {$ref: './dataset-version.schema.json'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+  /api/v1/dataset-versions/{versionId}/data-tools/export:
+    parameters:
+      - name: versionId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    get:
+      operationId: exportDataToolsPackage
+      parameters:
+        - name: profile
+          in: query
+          required: true
+          schema: {type: string, enum: [knowledge, sft]}
+      responses:
+        '200':
+          description: Immutable published package
+          content:
+            application/zip:
+              schema: {type: string, format: binary}
+        '404': {$ref: '#/components/responses/Problem'}
   /api/v1/datasets/{datasetId}/preparations:
     parameters:
       - $ref: '#/components/parameters/DatasetId'
@@ -82,6 +546,10 @@ paths:
         required: true
         content:
           application/octet-stream:
+            schema: {type: string, format: binary}
+          text/csv:
+            schema: {type: string, format: binary}
+          application/vnd.apache.parquet:
             schema: {type: string, format: binary}
       responses:
         '201':
@@ -133,6 +601,45 @@ paths:
               schema:
                 $ref: './dataset-version.schema.json'
         '404': {$ref: '#/components/responses/Problem'}
+  /api/v1/dataset-versions/{versionId}/preview:
+    get:
+      operationId: previewDatasetVersion
+      parameters:
+        - name: versionId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 100, default: 10}
+        - name: offset
+          in: query
+          required: false
+          schema: {type: integer, minimum: 0, default: 0}
+      responses:
+        '200':
+          description: Dataset preview
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [versionId, totalRows, rows]
+                properties:
+                  versionId: {type: string, format: uuid}
+                  totalRows: {type: integer, minimum: 0}
+                  rows:
+                    type: array
+                    items:
+                      type: object
+                      required: [index, mapped, raw]
+                      properties:
+                        index: {type: integer, minimum: 0}
+                        mapped: {type: object}
+                        raw: {type: object}
+        '404': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
   /api/v1/preparations/{preparationId}:
     parameters:
       - $ref: '#/components/parameters/PreparationId'
@@ -258,6 +765,8 @@ paths:
           content:
             application/jsonl: {}
             application/json: {}
+            text/csv: {}
+            application/vnd.apache.parquet: {}
         '404': {$ref: '#/components/responses/Problem'}
   /api/v1/preparations/{preparationId}/yield-draft:
     $ref: './lifecycle.openapi.yaml#/paths/~1api~1v1~1preparations~1{preparationId}~1yield-draft'
@@ -289,6 +798,34 @@ components:
         application/problem+json:
           schema: {$ref: './generated/common/problem-details.schema.json'}
   schemas:
+    ProductCapabilityReport:
+      type: object
+      required: [semantics, activationVerified, capabilities]
+      properties:
+        semantics: {const: configuration-only}
+        activationVerified:
+          type: boolean
+          const: false
+          description: Configuration is not proof of runtime activation.
+        capabilities:
+          type: array
+          items: {$ref: '#/components/schemas/ProductCapabilityStatus'}
+      additionalProperties: false
+    ProductCapabilityStatus:
+      type: object
+      required: [id, interfaceVersion, supported, configured, configurationEnvironmentVariable]
+      properties:
+        id: {type: string, minLength: 1, maxLength: 200}
+        interfaceVersion: {type: string, minLength: 1, maxLength: 100}
+        supported:
+          type: boolean
+          const: true
+          description: The Product declares an adapter for this capability contract.
+        configured:
+          type: boolean
+          description: Whether the corresponding connection_ref variable is non-empty.
+        configurationEnvironmentVariable: {type: string, minLength: 1, maxLength: 200}
+      additionalProperties: false
     CreateDatasetRequest:
       type: object
       required: [name]
@@ -371,7 +908,7 @@ components:
         state: {enum: [STAGED, MAPPED, SPLIT, CONFIRMED, PUBLISHED]}
         source: {$ref: './generated/platform/artifact-ref.schema.json'}
         sourceFilename: {type: string}
-        format: {enum: [JSONL, JSON, TEXT]}
+        format: {enum: [JSONL, JSON, TEXT, CSV, PARQUET]}
         detectedFields: {type: array, items: {type: string}}
         rowCount: {type: integer, minimum: 0}
         mapping: {$ref: '#/components/schemas/MappingConfig'}
@@ -422,10 +959,12 @@ components:
       type: object
       required: [name, artifact, mediaType]
       properties:
-        name: {type: string}
+        name: {type: string, pattern: '^[a-z0-9_-]+\.(jsonl|json|csv|parquet)$'}
         artifact: {$ref: './generated/platform/artifact-ref.schema.json'}
         rowCount: {type: integer, minimum: 0}
-        mediaType: {type: string, enum: [application/jsonl, application/json]}
+        mediaType:
+          type: string
+          enum: [application/jsonl, application/json, text/csv, application/vnd.apache.parquet]
       additionalProperties: false
     YieldDraftStatus:
       type: object
@@ -454,7 +993,8 @@ components:
         source: {$ref: './generated/platform/artifact-ref.schema.json'}
         output: {$ref: './generated/platform/artifact-ref.schema.json'}
         engineBindingId: {type: string}
-        engineCapabilityType: {type: string}
+        engineCapabilityType: {type: string, enum: [dataset.preparation.v1, dataset.generation.v1]}
+        dataTools: {$ref: './data-tools.schema.json#/$defs/DatasetVersionDataTools'}
         lineage: {type: array, items: {type: object}}
         rowCount: {type: integer, minimum: 0}
         schemaFields: {type: array, items: {type: string}}

@@ -1,0 +1,65 @@
+{
+  "schemaVersion": "cyrene.product.operation-catalog.v2",
+  "catalogVersion": "2.0.0",
+  "ownerId": "catalyst",
+  "operations": [
+    {
+      "operationId": "workspaceListDatasets",
+      "routeId": "workspaceListDatasets",
+      "openapiPath": "contracts/product/v1/workspace-internal.openapi.yaml",
+      "kind": "READ",
+      "requestSchemaPointer": null,
+      "responseSchemaPointers": [
+        "#/paths/~1internal~1workspace~1v1~1datasets/get/responses/200/content/application~1json/schema"
+      ],
+      "resourceId": {
+        "required": false,
+        "pathParameter": null,
+        "minLength": 1,
+        "maxLength": 512,
+        "pattern": null
+      },
+      "idempotency": {
+        "required": false,
+        "header": null,
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "scope": {
+        "organizationPathParameter": null,
+        "workspacePathParameter": null,
+        "responseBindings": [],
+        "requestBindings": []
+      }
+    },
+    {
+      "operationId": "workspaceCreateDataset",
+      "routeId": "workspaceCreateDataset",
+      "openapiPath": "contracts/product/v1/workspace-internal.openapi.yaml",
+      "kind": "COMMAND",
+      "requestSchemaPointer": "#/paths/~1internal~1workspace~1v1~1datasets/post/requestBody/content/application~1json/schema",
+      "responseSchemaPointers": [
+        "#/paths/~1internal~1workspace~1v1~1datasets/post/responses/201/content/application~1json/schema"
+      ],
+      "resourceId": {
+        "required": false,
+        "pathParameter": null,
+        "minLength": 1,
+        "maxLength": 512,
+        "pattern": null
+      },
+      "idempotency": {
+        "required": false,
+        "header": null,
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "scope": {
+        "organizationPathParameter": null,
+        "workspacePathParameter": null,
+        "responseBindings": [],
+        "requestBindings": []
+      }
+    }
+  ]
+}

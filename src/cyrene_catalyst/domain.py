@@ -15,7 +15,7 @@ from enum import StrEnum
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
 
@@ -34,6 +34,30 @@ class ContractModel(BaseModel):
         serialize_by_alias=True,
         extra="forbid",
     )
+
+
+class ProductCapabilityStatus(ContractModel):
+    """Report declared support and connection-ref configuration only.
+
+    中文:只报告已声明的支持范围与 connection_ref 配置状态。
+    """
+
+    id: str = Field(min_length=1, max_length=200)
+    interface_version: str = Field(min_length=1, max_length=100)
+    supported: Literal[True] = True
+    configured: bool
+    configuration_environment_variable: str = Field(min_length=1, max_length=200)
+
+
+class ProductCapabilityReport(ContractModel):
+    """Configuration-only capability view; it does not prove activation.
+
+    中文:仅供配置查询的 capability 视图，不代表服务已激活。
+    """
+
+    semantics: Literal["configuration-only"] = "configuration-only"
+    activation_verified: Literal[False] = False
+    capabilities: list[ProductCapabilityStatus]
 
 
 class DatasetState(StrEnum):
@@ -57,6 +81,8 @@ class ImportFormat(StrEnum):
     JSONL = "JSONL"
     JSON = "JSON"
     TEXT = "TEXT"
+    CSV = "CSV"
+    PARQUET = "PARQUET"
 
 
 class PreparationState(StrEnum):
@@ -84,6 +110,7 @@ class ArtifactRef(ContractModel):
     size_bytes: int = Field(ge=0)
     # Artifact kind is an opaque producer-owned category. The wire contract
     # validates its shape but deliberately does not publish a Product vocabulary.
+    # 中文:制品类型是由生产方拥有的不透明类别。线协议会校验其形态,但刻意不发布 Product 词汇表。
     kind: str = Field(min_length=1, max_length=128)
     manifest_digest: str | None = Field(
         default=None,
@@ -120,6 +147,29 @@ class Dataset(ContractModel):
     resource_version: int = Field(ge=1)
 
 
+class DataToolsVersionProjection(ContractModel):
+    """Additive dual-profile output metadata for one DatasetVersion.
+
+    中文:在唯一 DatasetVersion 上附加知识包与 SFT 包的引用及当前过期状态。
+    """
+
+    content_revision_id: UUID
+    source_revision_ids: list[UUID] = Field(default_factory=list)
+    knowledge_profile: Literal["CYRENE_KNOWLEDGE_BUNDLE_V1"] | None = None
+    knowledge_artifact: ArtifactRef | None = None
+    sft_profile: Literal["CYRENE_SFT_BUNDLE_V1"] = "CYRENE_SFT_BUNDLE_V1"
+    sft_artifact: ArtifactRef
+    stale: bool = False
+
+    @model_validator(mode="after")
+    def validate_knowledge_pair(self) -> DataToolsVersionProjection:
+        """Keep optional SFT-only publications free of partial knowledge refs."""
+
+        if (self.knowledge_profile is None) != (self.knowledge_artifact is None):
+            raise ValueError("Knowledge profile and artifact must be present together.")
+        return self
+
+
 class DatasetVersion(ContractModel):
     """Immutable DatasetVersion and its lineage evidence. | 不可变版本及谱系证据。"""
 
@@ -130,12 +180,15 @@ class DatasetVersion(ContractModel):
     source: ArtifactRef
     output: ArtifactRef | None = None
     engine_binding_id: str = Field(min_length=1, max_length=200)
-    engine_capability_type: Literal["dataset.preparation.v1"] = "dataset.preparation.v1"
+    engine_capability_type: Literal["dataset.preparation.v1", "dataset.generation.v1"] = (
+        "dataset.preparation.v1"
+    )
     lineage: list[LineageEdge] = Field(default_factory=list)
     source_refs: list[str] = Field(default_factory=list)
     row_count: int | None = Field(default=None, ge=0)
     schema_fields: list[str] | None = None
     failure: ProductFailure | None = None
+    data_tools: DataToolsVersionProjection | None = None
     created_at: datetime
     updated_at: datetime
     resource_version: int = Field(ge=1)
@@ -167,6 +220,8 @@ class ProblemDetails(ContractModel):
     retryable: bool
     trace_id: str
     resource_ref: str | None = None
+    request_id: str | None = None
+    recovery_action: str | None = None
 
 
 class EngineResult(ContractModel):
@@ -253,10 +308,15 @@ class SplitStats(ContractModel):
 class ExportFile(ContractModel):
     """One downloadable standard export inside a bundle. | 导出包内文件。"""
 
-    name: str = Field(pattern=r"^[a-z0-9_-]+\.(jsonl|json)$")
+    name: str = Field(pattern=r"^[a-z0-9_-]+\.(jsonl|json|csv|parquet)$")
     artifact: ArtifactRef
     row_count: int | None = Field(default=None, ge=0)
-    media_type: Literal["application/jsonl", "application/json"]
+    media_type: Literal[
+        "application/jsonl",
+        "application/json",
+        "text/csv",
+        "application/vnd.apache.parquet",
+    ]
 
 
 class Preparation(ContractModel):
@@ -340,3 +400,29 @@ class PublishPreparationResponse(ContractModel):
 
     preparation: Preparation
     dataset_version: DatasetVersion
+
+
+class PreviewRow(ContractModel):
+    """One row in the dataset version preview.
+
+    中文:数据集版本预览中的一行。
+    """
+
+    # 中文:数据集版本预览中的一行。
+
+    index: int = Field(ge=0)
+    mapped: dict[str, Any]
+    raw: dict[str, Any]
+
+
+class DatasetPreview(ContractModel):
+    """Paginated dataset version preview with mapped and raw fields.
+
+    中文:包含映射结果和原始字段的数据集版本分页预览。
+    """
+
+    # 中文:包含映射字段和原始字段的分页数据集版本预览。
+
+    version_id: UUID
+    total_rows: int = Field(ge=0)
+    rows: list[PreviewRow]

@@ -57,3 +57,16 @@ does not by itself prove hosted CI, canonical merge/read-back, or production sto
 - Reactor 负责模型推理与服务化。
 - Platform Kernel 负责通用进程监管与执行底座。
 - Platform Node Agent 负责直接硬件探测。
+---
+<!-- Chinese Translation / 中文翻译 -->
+
+## 权威表中文对照
+
+| 关注点 | 规范所有者 |
+| --- | --- |
+| Dataset 与 DatasetVersion 状态和沿袭 | Catalyst Product |
+| 数据准备能力的解析和执行模式选择 | Platform 与 Plugins 的规范边界 |
+| JSON/CSV/Parquet 解析、规范化与转换 | Plugins 所有的 `dataset.preparation.v1` |
+| Artifact 字节的发布与读取 | 可替换的 Artifact Plane 适配器 |
+| 训练草稿交接 | Yield Product |
+| 已选反馈导入 | Echo Product |

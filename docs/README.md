@@ -23,8 +23,10 @@ Concrete parsing and transformation implementations are intentionally absent fro
 | [`glossary.md`](glossary.md) | Bilingual domain vocabulary / 双语领域术语 |
 | [`faq.md`](faq.md) | Common questions and troubleshooting / 常见问题与排障指南 |
 | [`API.md`](API.md) | Implemented Product/API contract / 已实现的 Product/API 契约 |
+| [`../contracts/product/v1/workspace-internal.openapi.yaml`](../contracts/product/v1/workspace-internal.openapi.yaml) | Private, token-scoped Workspace service API / 私有 token scope Workspace 服务 API |
 | [`REPOSITORY-LIFECYCLE.md`](REPOSITORY-LIFECYCLE.md) | Existing lifecycle, governance, and release boundaries / 现有生命周期、治理与发布边界 |
 | [`DEPENDENCIES.md`](DEPENDENCIES.md) | Dependency license record and SBOM procedure / 依赖许可证记录与 SBOM 流程 |
+| [`logging-and-errors.md`](logging-and-errors.md) | Cross-repository logging, error codes, and diagnostics specification / 跨仓日志、错误码与诊断规范 (草案 v0.1) |
 
 ## Suggested order / 推荐顺序
 

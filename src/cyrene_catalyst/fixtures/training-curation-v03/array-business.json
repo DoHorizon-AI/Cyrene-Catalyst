@@ -1,0 +1,44 @@
+[
+  {
+    "sampleId": "json-alpaca",
+    "sourceFamilyId": "expense",
+    "_reviewNote": "CURATION_OPERATOR_ONLY_DO_NOT_TRAIN",
+    "instruction": "What evidence should accompany a travel expense claim?",
+    "input": "Follow the internal expense policy.",
+    "output": "Attach the approved travel request, receipts, and the required expense form."
+  },
+  {
+    "sampleId": "json-messages",
+    "sourceFamilyId": "storage",
+    "_reviewNote": "CURATION_OPERATOR_ONLY_DO_NOT_TRAIN",
+    "messages": [
+      {
+        "role": "system",
+        "content": "遵守文件共享权限规则。"
+      },
+      {
+        "role": "user",
+        "content": "如何共享部门文档？"
+      },
+      {
+        "role": "assistant",
+        "content": "只向有业务需要的成员授权，并设置合理的访问期限。"
+      }
+    ]
+  },
+  {
+    "sampleId": "json-sharegpt",
+    "sourceFamilyId": "procurement",
+    "_reviewNote": "CURATION_OPERATOR_ONLY_DO_NOT_TRAIN",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "How is a purchase request approved?"
+      },
+      {
+        "from": "gpt",
+        "value": "The manager reviews the business need, then procurement follows the approved purchasing process."
+      }
+    ]
+  }
+]

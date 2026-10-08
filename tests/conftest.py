@@ -2,7 +2,13 @@
 
 The fixture imports the owner package installed from Cyrene-Plugins-Official.
 It deliberately does not implement dataset preparation inside this Product.
+
+中文：用于 Catalyst 集成测试的 Direct Plugin endpoint。
+fixture 会导入从 Cyrene-Plugins-Official 安装的 owner package;
+它不会在这个 Product 内实现 dataset preparation。
 """
+# 中文:Catalyst 集成测试使用的直连 Plugin 端点。此夹具导入从 Cyrene-Plugins-Official 安装的 owner
+# 包;它刻意不在此 Product 中实现 dataset preparation。
 
 from __future__ import annotations
 
@@ -14,7 +20,11 @@ _CONNECTION_ENV = "CYRENE_DATASET_PREPARATION_CONNECTION_REF"
 
 
 def pytest_configure() -> None:
-    """Start the canonical dataset.preparation.v1 implementation."""
+    """Start the canonical dataset.preparation.v1 implementation.
+
+    中文:启动 canonical dataset.preparation.v1 实现。
+    """
+    # 中文:启动规范的 dataset.preparation.v1 实现。
 
     try:
         from cyrene_plugin_runtime import serve
@@ -36,7 +46,11 @@ def pytest_configure() -> None:
 
 
 def pytest_unconfigure() -> None:
-    """Stop the owner endpoint after the test session."""
+    """Stop the owner endpoint after the test session.
+
+    中文:在测试会话结束后停止 owner endpoint。
+    """
+    # 中文:测试会话结束后停止 owner 端点。
 
     os.environ.pop(_CONNECTION_ENV, None)
     for server in _SERVERS:

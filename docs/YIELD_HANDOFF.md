@@ -20,6 +20,8 @@ Catalyst 交付的是 Yield-owned 契约上的一个训练草稿请求；**不�
 | `train.jsonl`   | `application/jsonl` | 训练样本数                  | 标准训练数据                  |
 | `val.jsonl`     | `application/jsonl`  | 验证样本数（可为 0）       | 标准验证数据                  |
 | `errors.jsonl`  | `application/jsonl`  | 剔除样本数（带原因，不静默） | 每行含 `rowIndex/reasonCode/field/message/excerpt` |
+| `train.csv` / `val.csv` / `errors.csv` | `text/csv` | 对应 JSONL 行数 | 严格导出模式列 |
+| `train.parquet` / `val.parquet` / `errors.parquet` | `application/vnd.apache.parquet` | 对应 JSONL 行数 | 严格导出模式列 |
 | `manifest.json` | `application/json`   | —                          | 来源/映射/划分/样本谱系/文件引用 |
 
 `manifest.json` 关键字段：
@@ -54,7 +56,8 @@ Yield 是训练输入不变量与训练状态的唯一权威（见 Yield 的
 - 必需列：`conversations`（非空列表，元素含 `from`/`value`，`value` 非空）
 
 ### 可消费性证明
-- 发布时用 DuckDB `read_json(format="newline_delimited")` 真实读取 `train.jsonl`/`val.jsonl` 校验行数（`verify_jsonl_rows`）。
+- 发布时 Catalyst 对 Plugin 写出的 `train.jsonl`/`val.jsonl` 执行逐行 JSON、严格模式、
+  行数、摘要与大小校验，并确认内容与 Plugin 结果投影一致。
 - 测试 `tests/test_preparation.py::test_end_to_end_publish_and_consumable_export` 用 DuckDB
   读取导出，并断言每行的 `instruction`/`output` 为非空字符串。
 - `tests/test_yield_contract.py` 以 Yield-owned 契约快照校验实际发出的
@@ -121,6 +124,9 @@ POST /api/v1/training-drafts/{draft_id}/actions/start   # 仅 Yield 运营/其�
 
 ## 7. 边界与不在本轮范围
 
-- PDF / Word / PowerPoint / Excel 仅在 `preparation.detect_format` 识别魔数并返回 `CATALYST_IMPORT_FORMAT_UNSUPPORTED`。未来的文档导入 Plugin 可以直接通过 Catalyst 的 Product/Plugin 契约接入，本轮不实现解析。
+- CSV / Parquet 导入与导出已支持；CSV 使用 `text/csv`，Parquet 使用
+  `application/vnd.apache.parquet`，导出列必须符合严格的 Product 模式校验。
+  PDF / Word / PowerPoint / Excel 仍不支持；未来的文档导入 Plugin 可以直接通过
+  Catalyst 的 Product/Plugin 契约接入。
 - 复杂合成数据、自动标注、大型质量平台不在本轮范围。
 - 嵌套字段路径映射（如行内已含 `conversations` 列表的 ShareGPT 导入）本轮不支持，映射仅针对顶层字段；对话组装按行级 + `groupBy` 连续段。

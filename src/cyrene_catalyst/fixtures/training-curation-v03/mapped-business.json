@@ -1,0 +1,8 @@
+{
+  "sampleId": "mapped-source",
+  "sourceFamilyId": "visitor",
+  "_reviewNote": "CURATION_OPERATOR_ONLY_DO_NOT_TRAIN",
+  "task": "访客到达后由谁接待？",
+  "context": "访客预约已经审核通过。",
+  "answer": "由预约中登记的接待人核验访客身份并负责接待。"
+}

@@ -1,0 +1,68 @@
+{
+  "fixtureVersion": "1",
+  "provenance": "Authored business examples created for Catalyst acceptance; no customer data or third-party dataset content.",
+  "license": "Apache-2.0",
+  "totalRecords": 28,
+  "files": [
+    {
+      "filename": "array-business.json",
+      "sha256": "f4997b275348dd99b792c8057a647b042f392ea669b01f6ded139c2a189d6649",
+      "records": 3
+    },
+    {
+      "filename": "mapped-business.json",
+      "sha256": "87fb022bf17269281e297a2dd281d3f2e92c33321327b38d01d7d894ece91975",
+      "records": 1
+    },
+    {
+      "filename": "mixed-business.jsonl",
+      "sha256": "15b8b595e5c88d10e9045463e2178cc85d159fc0dd4bee9cd88fa81398d2d08a",
+      "records": 21
+    },
+    {
+      "filename": "second-export.jsonl",
+      "sha256": "305156db897cc07bdc81d04dcc06e3fc5974b0addf59dac20b322b260262fd9b",
+      "records": 3
+    }
+  ],
+  "sourceMappings": {
+    "mapped-business.json": {
+      "format": "alpaca",
+      "fieldMapping": {
+        "instruction": "task",
+        "input": "context",
+        "output": "answer"
+      }
+    }
+  },
+  "recipe": {
+    "id": "fixed-mixed-business-v03",
+    "version": "1",
+    "format": "auto",
+    "maxCharacters": 2000,
+    "minCharacters": 2,
+    "unicodeNormalization": "NFC"
+  },
+  "metadataSentinel": "CURATION_OPERATOR_ONLY_DO_NOT_TRAIN",
+  "expectedExcludedSamples": [
+    "duplicate-alpaca",
+    "duplicate-prompt",
+    "missing-output",
+    "wrong-role",
+    "empty-answer",
+    "overlong",
+    "tool-calls",
+    "multimodal",
+    "incomplete-prompt",
+    "wrong-type",
+    "role-order",
+    "mid-system",
+    "policy-prohibited"
+  ],
+  "expectedHumanCorrections": [
+    "needs-mapping",
+    "mapped-source",
+    "short-answer"
+  ],
+  "expectedPublishedRecords": 13
+}
