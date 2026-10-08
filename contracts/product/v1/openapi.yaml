@@ -12,6 +12,20 @@ info:
 servers:
   - url: /
 paths:
+  /api/v1/system/capabilities:
+    get:
+      operationId: getProductCapabilityConfiguration
+      description: >-
+        Reports statically supported Plugin contracts and whether each opaque
+        connection_ref environment variable is configured. This is a
+        configuration-only view and does not verify endpoint reachability or
+        Plugin activation. Raw connection_ref values are never returned.
+      responses:
+        '200':
+          description: Supported capability configuration
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProductCapabilityReport'}
   /api/v1/datasets:
     get:
       operationId: listDatasets
@@ -784,6 +798,34 @@ components:
         application/problem+json:
           schema: {$ref: './generated/common/problem-details.schema.json'}
   schemas:
+    ProductCapabilityReport:
+      type: object
+      required: [semantics, activationVerified, capabilities]
+      properties:
+        semantics: {const: configuration-only}
+        activationVerified:
+          type: boolean
+          const: false
+          description: Configuration is not proof of runtime activation.
+        capabilities:
+          type: array
+          items: {$ref: '#/components/schemas/ProductCapabilityStatus'}
+      additionalProperties: false
+    ProductCapabilityStatus:
+      type: object
+      required: [id, interfaceVersion, supported, configured, configurationEnvironmentVariable]
+      properties:
+        id: {type: string, minLength: 1, maxLength: 200}
+        interfaceVersion: {type: string, minLength: 1, maxLength: 100}
+        supported:
+          type: boolean
+          const: true
+          description: The Product declares an adapter for this capability contract.
+        configured:
+          type: boolean
+          description: Whether the corresponding connection_ref variable is non-empty.
+        configurationEnvironmentVariable: {type: string, minLength: 1, maxLength: 200}
+      additionalProperties: false
     CreateDatasetRequest:
       type: object
       required: [name]

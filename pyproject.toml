@@ -20,6 +20,8 @@ dependencies = [
 
 [project.scripts]
 cyrene-catalyst = "cyrene_catalyst.cli:main"
+cyrene-catalyst-accept-training-curation = "cyrene_catalyst.external_acceptance:main"
+cyrene-catalyst-verify-training-bundle = "cyrene_catalyst_consumer.training_bundle:main"
 
 [dependency-groups]
 dev = [
@@ -36,7 +38,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/cyrene_catalyst"]
+packages = ["src/cyrene_catalyst", "src/cyrene_catalyst_consumer"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
