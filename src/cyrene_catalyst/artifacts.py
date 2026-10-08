@@ -19,11 +19,14 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from cy_artifacts import ArtifactError, ArtifactKind, LocalArtifactProvider
+from cy_artifacts import ArtifactError as ArtifactError
+from cy_artifacts import ArtifactKind, LocalArtifactProvider
 from cy_artifacts import ArtifactRef as PlatformArtifactRef
 
 from cyrene_catalyst.domain import ArtifactRef
 from cyrene_catalyst.errors import CatalystError
+
+__all__ = ["ArtifactError", "LocalArtifactPlane", "sha256_file"]
 
 
 def sha256_file(path: Path) -> str:

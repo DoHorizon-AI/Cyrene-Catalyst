@@ -5,24 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from uuid import uuid4
 
-import pytest
 from fastapi.testclient import TestClient
 
 from cyrene_catalyst import create_app
-from cyrene_catalyst.domain import (
-    ArtifactRef,
-    CreateDatasetRequest,
-    ExportFile,
-    Preparation,
-    PreparationState,
-    utc_now,
-)
-from cyrene_catalyst.trial_auth import (
-    install_trial_auth,
-    trial_authenticator_from_environment,
-)
 from cyrene_catalyst.workspace_auth import WorkspaceServiceAuthenticator
 
 TOKEN_ORG_A = "token-org-a-" + "a" * 40
@@ -52,7 +38,7 @@ def _make_app(tmp_path: Path, token_env: dict[str, str] | None = None):
 
 
 def test_cross_instance_and_workspace_isolation(tmp_path: Path) -> None:
-    """A resource created by tenant A (org-alpha, ws-alpha) must return 404 to tenant B (org-beta, ws-beta)."""
+    """A resource created by tenant A must return 404 to tenant B."""
     app = _make_app(tmp_path)
     with TestClient(app) as client:
         # 1. Tenant A creates a dataset in private workspace
@@ -135,7 +121,7 @@ def test_unauthorized_artifact_download_path_traversal(tmp_path: Path) -> None:
 
 
 def test_xss_in_dataset_name_and_filename(tmp_path: Path) -> None:
-    """XSS payloads in dataset names and filenames must be safely handled without script execution risk."""
+    """XSS payloads in dataset names and filenames must be safely handled."""
     app = _make_app(tmp_path)
     headers_a = {"Authorization": f"Bearer {TOKEN_ORG_A}"}
     xss_payload = '<script>alert("XSS")</script><img src=x onerror=alert(1)>'

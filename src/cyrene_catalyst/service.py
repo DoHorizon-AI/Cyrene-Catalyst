@@ -17,10 +17,9 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from cy_artifacts import ArtifactError
 from pydantic import ValidationError
 
-from cyrene_catalyst.artifacts import LocalArtifactPlane
+from cyrene_catalyst.artifacts import ArtifactError, LocalArtifactPlane
 from cyrene_catalyst.domain import (
     ArtifactRef,
     CreateDatasetRequest,
@@ -767,7 +766,10 @@ class CatalystService:
             raise CatalystError(
                 code="CATALYST_INVALID_STATE",
                 title="Invalid preparation state",
-                detail="Preparation mapping, normalization, and split must be configured before publication.",
+                detail=(
+                    "Preparation mapping, normalization, and split "
+                    "must be configured before publication."
+                ),
                 status=409,
             )
         staging = self.artifacts.stage_dir(f"prep-{preparation.id}")
