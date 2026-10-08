@@ -101,7 +101,7 @@ requires a bearer token:
 
 ```bash
 cyrene-catalyst-accept-training-curation \
-  --base-url http://127.0.0.1:8080 \
+  --base-url http://127.0.0.1:8004 \
   --output-directory /tmp/catalyst-installed-acceptance
 cyrene-catalyst-verify-training-bundle \
   /tmp/catalyst-installed-acceptance/authored-business-sft.zip
