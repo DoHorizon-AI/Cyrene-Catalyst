@@ -26,6 +26,8 @@ from cy_artifacts import ArtifactRef as PlatformArtifactRef
 from cyrene_catalyst.domain import ArtifactRef
 from cyrene_catalyst.errors import CatalystError
 
+__all__ = ["ArtifactError", "LocalArtifactPlane", "sha256_file"]
+
 
 def sha256_file(path: Path) -> str:
     """Return the canonical sha256 digest string. | 返回规范 sha256 摘要。"""

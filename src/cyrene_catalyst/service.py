@@ -767,8 +767,8 @@ class CatalystService:
                 code="CATALYST_INVALID_STATE",
                 title="Invalid preparation state",
                 detail=(
-                    "Preparation mapping, normalization, and split must be configured "
-                    "before publication."
+                    "Preparation mapping, normalization, and split "
+                    "must be configured before publication."
                 ),
                 status=409,
             )
