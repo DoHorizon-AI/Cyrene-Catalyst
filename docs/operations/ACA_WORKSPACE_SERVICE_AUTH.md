@@ -17,7 +17,7 @@ Catalyst private Workspace routes return `503` until `CYRENE_WORKSPACE_SERVICE_A
 
 ## Deployment behavior
 
-The workflow deploys on pushes to `main`, `release`, and `develop`, and on manual dispatch. With both auth variables unset, it performs the original image deployment and leaves ACA auth configuration unchanged. Setting either auth variable makes the workflow fail before checkout, Azure login, or any Azure write. The workflow does not register Key Vault references or update the auth environment variable.
+The workflow runs only on manual dispatch; source pushes and component-release completion do not start Azure deployment. With both auth variables unset, a manually started run performs the original image deployment and leaves ACA auth configuration unchanged. Setting either auth variable makes the workflow fail before checkout, Azure login, or any Azure write. The workflow does not register Key Vault references or update the auth environment variable.
 
 The auth rollout is closed because the documented [Container Apps Update API](https://learn.microsoft.com/en-us/rest/api/resource-manager/containerapps/container-apps/update) does not describe an `If-Match`/ETag precondition. The existing opt-in sequence used `az containerapp secret set` followed by `az containerapp update --set-env-vars`; neither write had a conditional version guard. The local CLI implementation reads the app before the secret-set full-resource update and before the template patch, so a concurrent revision could be overwritten by either stale write. A revision snapshot or a GitHub-only lock cannot protect against a portal, IaC, or another out-of-band writer.
 
@@ -34,7 +34,7 @@ After the manual update, verify that the active revision retains internal ingres
 
 ## 中文说明
 
-Catalyst 私有 Workspace 路由在 `CYRENE_WORKSPACE_SERVICE_AUTH_JSON` 配置有效的凭据范围映射前返回 `503`。当前部署工作流不负责启用该配置：两个认证变量均为空时保留原有镜像发布流程；只要任一变量非空，工作流就在检出代码、Azure 登录或任何 Azure 写操作前失败。
+Catalyst 私有 Workspace 路由在 `CYRENE_WORKSPACE_SERVICE_AUTH_JSON` 配置有效的凭据范围映射前返回 `503`。当前部署工作流仅由手动 dispatch 启动；源码推送和组件发布完成都不会启动 Azure 部署。两个认证变量均为空时，手动运行保留原有镜像发布流程；只要任一变量非空，工作流就在检出代码、Azure 登录或任何 Azure 写操作前失败。
 
 Platform 发布负责人应通过批准的密钥管理流程把 JSON 映射写入 Azure Key Vault。每条映射只包含小写 SHA-256 token 摘要、固定组织和 Workspace 范围；发布前需核对摘要唯一性及准确范围。HTTP 请求不能提供用户、角色、组织或 Workspace 身份。Catalyst 和 Echo 必须使用各自独立的映射与 Key Vault secret。给 Catalyst Container App 分配托管身份，并只授予该身份读取映射 secret 的权限。URI 和身份资源 ID 只记入受控变更记录，不要设置当前工作流中的认证变量；设置任一变量会触发 fail-closed。
 
