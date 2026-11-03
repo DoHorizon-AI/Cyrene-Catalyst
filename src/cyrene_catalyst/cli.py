@@ -22,6 +22,7 @@ import httpx
 import uvicorn
 
 from cyrene_catalyst.api import create_app
+from cyrene_catalyst.restore_guard import assert_not_restored
 from cyrene_catalyst.trial_auth import (
     TrialAuthConfigError,
     trial_authenticator_from_environment,
@@ -60,6 +61,7 @@ def _call(client: httpx.Client, method: str, path: str, **kwargs: Any) -> dict[s
 
 def _serve(arguments: argparse.Namespace) -> int:
     base = arguments.home.expanduser()
+    assert_not_restored(base, arguments.artifact_root or base / "artifacts")
     base.mkdir(parents=True, exist_ok=True)
     try:
         trial_authenticator = trial_authenticator_from_environment()

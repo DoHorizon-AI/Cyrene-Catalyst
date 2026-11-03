@@ -1,0 +1,165 @@
+{
+  "schemaVersion": 1,
+  "kind": "local-catalyst-restore-hold-and-affected-knowledge-delta",
+  "description": {
+    "en": "Local executable startup-hold and affected real-service/browser evidence; synthetic content and model leaves.",
+    "zh": "本地真实入口暂停门禁及受影响的真实服务/浏览器证据；内容与模型叶子为合成。"
+  },
+  "guardSource": {
+    "commit": "0f4fb7ce12678785b10b69cd3c1d1cf30cfa4499",
+    "tree": "d386a7fe619a8266397da98b25f34762ac7b0b36",
+    "canonicalFiles": 124,
+    "canonicalArchiveSHA256": "52003e72d3c513c24086adf3d60b31acf376cc234fc3d914f5a4f71db855fb68"
+  },
+  "quality": {
+    "frozenRuntime": "0.2.0",
+    "startupHoldTestsPassed": 21,
+    "fullTestsPassed": 129,
+    "ruff": "PASS",
+    "format": "PASS",
+    "mypySourceFiles": 24,
+    "firstFullRun": {
+      "passed": 128,
+      "environmentFailures": 1,
+      "reason": "Export had no Git index and boundary subprocess PATH lacked python. Negative log retained."
+    },
+    "environmentRecheck": {
+      "originalBoundaryPassed": 1,
+      "subsequentFullPassed": 129,
+      "emptyCanonicalGitIndexOnly": true,
+      "upstreamHistoryFabricated": false,
+      "assertionsWeakened": false
+    }
+  },
+  "officialQueueProcess": {
+    "classification": "REAL OS process, canonical SQLite run, official preparation Plugin RPC and Artifact SDK; SYNTHETIC approved inputs",
+    "providerRuntime": "0.2.2",
+    "knowledgePreparation": "0.1.1",
+    "applicationPatched": false,
+    "negativeMarkers": [
+      "malformed",
+      "directory",
+      "dangling"
+    ],
+    "negativeProviderCalls": 0,
+    "negativeDatabaseNonceSchemaAndFileBytesUnchanged": true,
+    "unmarkedRunStatus": "SUCCEEDED",
+    "unmarkedProviderCalls": 1,
+    "unmarkedArtifacts": 2,
+    "firstMissingLocatorInputFailurePreserved": true
+  },
+  "affectedKnowledgeDelta": {
+    "sources": [
+      {
+        "component": "nav-final",
+        "commit": "0db5deab1560b41f936d81a8f8ae5154fe88148b",
+        "canonicalArchiveSHA256": "0ad2994bcced051b65c64d191634a234df9bcb3b337c0461cfabba395d992a70",
+        "canonicalFilesVerifiedAfterRun": 512
+      },
+      {
+        "component": "client",
+        "commit": "abd70a7ccdaf0cc20c5931206f370cd16b3e82ca",
+        "canonicalArchiveSHA256": "4e6e3c9310d391ff3d73f31084e16ec8cbba37843c9a955fa1826937c80157b0",
+        "canonicalFilesVerifiedAfterRun": 508
+      },
+      {
+        "component": "catalyst",
+        "commit": "0f4fb7ce12678785b10b69cd3c1d1cf30cfa4499",
+        "canonicalArchiveSHA256": "52003e72d3c513c24086adf3d60b31acf376cc234fc3d914f5a4f71db855fb68",
+        "canonicalFilesVerifiedAfterRun": 124
+      }
+    ],
+    "browserGatesPassed": 16,
+    "navRuntime": "0.2.4",
+    "retrievalRuntime": "0.2.2",
+    "separateEnvironments": true,
+    "realComponents": [
+      "Chromium",
+      "React Client",
+      "Control BFF",
+      "paired WebHost",
+      "Executor",
+      "SQLite owner",
+      "Catalyst",
+      "Artifact SDK",
+      "official knowledge preparation Plugin",
+      "official retrieval Plugin"
+    ],
+    "actorCatalogs": {
+      "A": [
+        "alice",
+        "shared"
+      ],
+      "B": [
+        "bob",
+        "shared"
+      ]
+    },
+    "otherPrivatePackageStatus": 403,
+    "actualAuthorizedBodyVerifiedBeforeCurrentUserMessage": true,
+    "sourceRevocation": {
+      "editStatus": 201,
+      "reviewStatus": 200,
+      "beforeSyntheticModelResponse": true,
+      "taskStatus": "failed",
+      "activeAssistantMessages": 0
+    },
+    "crossActorIsolation": [
+      "conversation",
+      "memory",
+      "persona",
+      "profile",
+      "graph",
+      "knowledge",
+      "attachment"
+    ],
+    "sourceBytesVerifiedAfterRun": true,
+    "ownedProcessesWaited": true,
+    "remainingCommandOrCwdMatches": 0,
+    "syntheticStateRetained": true,
+    "productionSourceChanged": false
+  },
+  "previousFullAcceptance": {
+    "catalystCommit": "1593216baebcf82f1c3bc230a3b3e2392a20192d",
+    "receiptSHA256": "ad9bfa51331f88cdc08c1b76815e384ea2ae606e7c5da0d27cad14dc78914cf8",
+    "unchanged": true,
+    "fullC1OrG2Relabeled": false,
+    "g2SixteenTurnsRerunInThisDelta": false
+  },
+  "SIMULATED": [
+    "foreground model SSE responses",
+    "embedding vectors",
+    "local identity bootstrap",
+    "dataset and approved publication seeds"
+  ],
+  "NOT_RUN": [
+    "real external model turn delivery",
+    "real accounts or vendor delivery",
+    "hosted CI",
+    "deployment",
+    "remote publication",
+    "Platform managed lifecycle"
+  ],
+  "evidenceSHA256": {
+    "all-tests.log": "ad0f7c5fa745e007ce948dbdeb20521508bddc5398b144b92b6542e2613c2052",
+    "boundary-environment-recheck.log": "c94f2add614de805d49dc30834f4f3a7b7a290a796a0367ac258887f78c1e786",
+    "all-tests-final.log": "c83661645f9c0876b4b67555998c8b85a0fd30ca84eee519b3d428e995c33f42",
+    "all-tests-final.xml": "8f6b4beef9dca731d4d24736ef125b19e2821af20f2796ad1202307b7fa710ae",
+    "restore-guard-first.log": "1990dc7cf62a251dd649f9badd6e93cca5eda244aa0872f502855bb519eaceb3",
+    "ruff-final.log": "a4443afdcfb6d7363adb285762515ccf7cf50473b1a05c20c1a50f6bed4d26b0",
+    "format.log": "7d00750d419c1aea4ee27c5718104d3a953d208c0542435a0f8e31e4a6ecd907",
+    "mypy.log": "653c24af21ad3bc4a8cf9a6ba237261490a6dc0b9703ef71eef912330b8ca539",
+    "actual-queue-process.log": "30c83c4b8079d1f2b02203d5d0ad4c68eb154ae41ce7c8a0a2133a26f7a8f034",
+    "actual-queue-process2.log": "1888df55ac31966d7229788efe4ee5b06877c0dd0f3e3f553b0bf1867d58d464",
+    "actual-queue-receipt.json": "7ccb5b3e63c7a0932c61e03c357956aaa8fdcf65f1ab09637c2dfcb4e7f339a2",
+    "knowledge-compatibility.log": "21d5327622322ba25c09dc6f04030e468c18e6d16d86c15acdec445236777d4f",
+    "final-knowledge-delta.log": "403c3d87ebe7906931840fb64f1832778ade384fbb51ee73b38628b9d17626bf",
+    "final-knowledge-delta/browser-results.json": "c81ed9eb382d4c34abb55843850818882810bc9c1e0d08f9eae9e3b09872a796",
+    "final-knowledge-delta/knowledge-source-revocation.json": "6a4d2c8749b22e952aedeea576c85561fb14914eb46dc3330ea2639e4f10080f",
+    "final-knowledge-delta/delta-proof.json": "a24cd47e804ce4b57783e4bc3125b4f179cb54c12a3241a55328a49d25cde447",
+    "run-final-knowledge-delta.sh": "f544281e864c3c337af0d5080fe91bacf4ca7e89a14797488e30c0be87f7e042",
+    "knowledge-delta-fixtures/owned-browser-multiuser.py": "53da604a178e89c4843afc3f9d6987eb8044d57660702e827ca3af60a9805e93",
+    "knowledge-delta-fixtures/owned-browser.mjs": "0c5172c4b248da4dd69ec26d9b1170c4ec9be518c9ae109506331472d42bd406",
+    "knowledge-delta-fixtures/owned-stack-smoke.py": "5dcda4d2c92e2b5a3b8712f0d17a054db1ae213723e3b17875f52f9a2e6908e7"
+  }
+}

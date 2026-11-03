@@ -28,6 +28,7 @@ from cyrene_catalyst.data_tools_domain import (
 )
 from cyrene_catalyst.data_tools_store import DataToolsStore
 from cyrene_catalyst.domain import utc_now
+from cyrene_catalyst.restore_guard import RestoreSuspendedError, assert_not_restored
 from cyrene_catalyst.workspace_auth import WorkspaceServicePrincipal
 
 _PAID_CALL_UNKNOWN = "CATALYST_PAID_CALL_OUTCOME_UNKNOWN"
@@ -73,6 +74,10 @@ class ProcessingRunCoordinator:
         max_workers: int = 2,
         recover_on_start: bool = True,
     ) -> None:
+        authorities = getattr(store, "database_path_authorities", None)
+        if not isinstance(authorities, tuple) or not authorities:
+            raise RestoreSuspendedError("RESTORE_SUSPENDED: storage path authority is required")
+        assert_not_restored(*authorities)
         if max_workers < 1:
             raise ValueError("max_workers must be at least one.")
         self.store = store

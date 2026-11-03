@@ -35,13 +35,27 @@ from cyrene_catalyst.data_tools_domain import (
     SourceRevision,
 )
 from cyrene_catalyst.domain import utc_now
+from cyrene_catalyst.restore_guard import assert_not_restored
 from cyrene_catalyst.workspace_auth import WorkspaceServicePrincipal
 
 
 class DataToolsStore:
     """Persist Data Tools resources under the existing Catalyst Dataset authority."""
 
+    @property
+    def database_path(self) -> Path:
+        """The constructor's storage authority, also checked before worker recovery."""
+        return self._database_path
+
+    @property
+    def database_path_authorities(self) -> tuple[Path, Path]:
+        """Retain both original lexical and physical storage paths for recovery checks."""
+        return self._database_path, self._resolved_database_path
+
     def __init__(self, database_path: Path) -> None:
+        assert_not_restored(database_path)
+        self._database_path = database_path.expanduser().absolute()
+        self._resolved_database_path = database_path.expanduser().resolve()
         database_path.parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(database_path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row

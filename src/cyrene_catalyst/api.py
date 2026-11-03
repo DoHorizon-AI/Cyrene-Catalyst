@@ -68,6 +68,7 @@ from cyrene_catalyst.logging import (
     parse_w3c_traceparent,
     sanitize_request_id,
 )
+from cyrene_catalyst.restore_guard import assert_not_restored
 from cyrene_catalyst.service import CatalystService
 from cyrene_catalyst.store import CatalystStore
 from cyrene_catalyst.trial_auth import install_trial_auth, trial_principal_from_request
@@ -150,6 +151,7 @@ def create_app(
 ) -> FastAPI:
     """Build an app with explicit durable adapters. | 使用显式持久化适配器创建应用。"""
 
+    assert_not_restored(database_path, artifact_root)
     store = CatalystStore(database_path)
     artifacts = LocalArtifactPlane(artifact_root)
     service = CatalystService(
