@@ -1,0 +1,5 @@
+/.gitattributes text eol=lf
+*.sh text eol=lf
+/src/cyrene_catalyst/fixtures/training-curation-v03/*.json text eol=lf
+/src/cyrene_catalyst/fixtures/training-curation-v03/*.jsonl text eol=lf
+/contracts/vendor/yield-product-v1/** text eol=lf

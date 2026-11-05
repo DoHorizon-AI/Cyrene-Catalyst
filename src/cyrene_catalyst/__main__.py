@@ -16,12 +16,14 @@ from pathlib import Path
 import uvicorn
 
 from cyrene_catalyst.api import create_app
+from cyrene_catalyst.restore_guard import assert_not_restored
 
 
 def main() -> None:
     """Start the local Catalyst preparation UI. | 启动本地整理界面。"""
 
     base = Path(os.environ.get("CATALYST_HOME", str(Path.cwd() / ".catalyst")))
+    assert_not_restored(base, Path(os.environ.get("CYRENE_ARTIFACT_ROOT", str(base / "artifacts"))))
     base.mkdir(parents=True, exist_ok=True)
     app = create_app(
         database_path=base / "catalyst.sqlite3",

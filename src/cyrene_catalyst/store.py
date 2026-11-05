@@ -17,6 +17,7 @@ from uuid import UUID
 
 from cyrene_catalyst.domain import Dataset, DatasetVersion, Preparation
 from cyrene_catalyst.errors import CatalystError
+from cyrene_catalyst.restore_guard import assert_not_restored
 from cyrene_catalyst.workspace_auth import WorkspaceServicePrincipal
 
 
@@ -24,6 +25,7 @@ class CatalystStore:
     """Durable Product store; never derives state from an engine. | 产品状态权威存储。"""
 
     def __init__(self, database_path: Path) -> None:
+        assert_not_restored(database_path)
         database_path.parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(database_path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
